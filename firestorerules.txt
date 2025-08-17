@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Mind map documents can be read, updated, or deleted only by their owner.
+    match /documents/{docId} {
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+      // Anyone authenticated can create a new document, as long as they set themselves as the owner.
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+    }
+  }
+}
