@@ -19,4 +19,4 @@ export const PALETTE_COLORS = [ROOT_NODE_COLOR, ...NODE_COLORS];
 // to grant access to the Super Admin Panel.
 // You can find your UID in the Firebase Authentication console.
 // ===================================================================
-export const SUPER_ADMIN_UID = 'CHANGE_THIS_TO_YOUR_FIREBASE_ADMIN_UID';
+export const SUPER_ADMIN_UID = 'fYCpcIideMYs09ZkgZm31cGzQks1';
