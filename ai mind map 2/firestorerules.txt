@@ -1,0 +1,20 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /documents/{docId} {
+      // Owner has full control over their own documents.
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+      
+      // ====================================================================================
+      // IMPORTANT: ACTION REQUIRED FOR ADMIN PANEL
+      // To allow the admin panel to read all data, you MUST replace the placeholder UID
+      // below with the same Firebase UID you set for SUPER_ADMIN_UID in 'src/constants.ts'.
+      // ====================================================================================
+      allow get, list: if request.auth != null && request.auth.uid == 'CHANGE_THIS_TO_YOUR_FIREBASE_ADMIN_UID';
+      
+      // Authenticated users can create documents, but must set themselves as the owner.
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+    }
+  }
+}
