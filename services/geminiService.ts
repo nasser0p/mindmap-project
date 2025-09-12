@@ -30,48 +30,39 @@ export type EnhancedNode = {
     children?: EnhancedNode[];
 };
 
-// Define a non-circular, nested schema with the required 'n' field.
-const grandchildSchema = {
+// Define a schema with a fixed depth to prevent infinite recursion in the client library.
+const MAX_DEPTH = 6;
+
+// Base properties for a node
+const nodeProperties = {
+    n: { type: Type.STRING, description: "A unique identifier for the node, like the text in snake_case." },
+    text: { type: Type.STRING, description: "The title of the mind map node." },
+    summary: { type: Type.STRING, description: "A brief, one-sentence explanation of the concept." },
+    type: { type: Type.STRING, enum: ['CATEGORY', 'GATE_TYPE', 'CONCEPT', 'EXPRESSION', 'TRUTH_TABLE', 'EXAMPLE'], description: "The type of content this node represents." },
+};
+const nodeRequired = ["n", "text", "type", "summary"];
+
+// Create nested schemas up to MAX_DEPTH iteratively to avoid circular references.
+let currentNodeSchema: any = {
     type: Type.OBJECT,
-    properties: {
-        n: { type: Type.STRING, description: "A unique identifier for the node, like the text in snake_case." },
-        text: { type: Type.STRING },
-        summary: { type: Type.STRING },
-        type: { type: Type.STRING, enum: ['CATEGORY', 'GATE_TYPE', 'CONCEPT', 'EXPRESSION', 'TRUTH_TABLE', 'EXAMPLE'] },
-    },
-    required: ["n", "text", "type", "summary"]
+    properties: nodeProperties,
+    required: nodeRequired,
 };
 
-const childSchema = {
-    type: Type.OBJECT,
-    properties: {
-        n: { type: Type.STRING, description: "A unique identifier for the node, like the text in snake_case." },
-        text: { type: Type.STRING },
-        summary: { type: Type.STRING },
-        type: { type: Type.STRING, enum: ['CATEGORY', 'GATE_TYPE', 'CONCEPT', 'EXPRESSION', 'TRUTH_TABLE', 'EXAMPLE'] },
-        children: {
-            type: Type.ARRAY,
-            items: grandchildSchema
-        }
-    },
-    required: ["n", "text", "type", "summary"]
-};
-
-const parentNodeSchema = {
-    type: Type.OBJECT,
-    properties: {
-        n: { type: Type.STRING, description: "A unique identifier for the node, like the text in snake_case." },
-        text: { type: Type.STRING, description: "The title of the mind map node." },
-        summary: { type: Type.STRING, description: "A brief, one-sentence explanation of the concept." },
-        type: { type: Type.STRING, enum: ['CATEGORY', 'GATE_TYPE', 'CONCEPT', 'EXPRESSION', 'TRUTH_TABLE', 'EXAMPLE'], description: "The type of content this node represents." },
-        children: {
-            type: Type.ARRAY,
-            description: "An array of nested child nodes.",
-            items: childSchema
-        }
-    },
-    required: ["n", "text", "type", "summary"]
-};
+for (let i = 0; i < MAX_DEPTH; i++) {
+    currentNodeSchema = {
+        type: Type.OBJECT,
+        properties: {
+            ...nodeProperties,
+            children: {
+                type: Type.ARRAY,
+                description: "An array of nested child nodes.",
+                items: currentNodeSchema,
+            }
+        },
+        required: nodeRequired,
+    };
+}
 
 const enhancedMindMapSchema = {
     type: Type.OBJECT,
@@ -79,7 +70,7 @@ const enhancedMindMapSchema = {
         nodes: {
             type: Type.ARRAY,
             description: "The top-level nodes of the generated mind map.",
-            items: parentNodeSchema
+            items: currentNodeSchema
         }
     },
     required: ["nodes"]
@@ -90,28 +81,32 @@ export async function generateEnhancedMindMapFromFile(extractedText: string, bas
     try {
         const systemInstruction = `You are an expert at creating structured, hierarchical mind maps from text. Your goal is to synthesize and transform the provided document into a rich, insightful, and deeply nested mind map. Do not simply transcribe the document's structure. Your output should demonstrate a deeper understanding by adding explanatory summaries and creating logical groupings that may not be explicit in the original text. Your entire response MUST be a single, valid JSON object that strictly adheres to the provided schema.`;
         
-        const prompt = `The user has provided text extracted from a document. They want to create a detailed mind map summarizing this content. The new mind map will be attached to a parent node titled "${contextNodeText}".
+        const prompt = `The user has provided a document that has been pre-processed into a structured Markdown format. Your task is to convert this structured text into a detailed, hierarchical mind map. The new mind map will be attached to a parent node titled "${contextNodeText}".
 
-**Extracted Document Text:**
-\`\`\`
+**Structured Document Content (Markdown):**
+\`\`\`markdown
 ${extractedText}
 \`\`\`
 
 **Your Task:**
-1.  **Full-Text Analysis:** Read the ENTIRE text from start to finish to understand the main topics, their relationships, and the underlying concepts.
-2.  **Synthesize and Structure:** Instead of just copying headings, identify the core themes of the document. These will be your top-level nodes.
-3.  **Deepen the Hierarchy:** For each topic, don't just list the bullet points. Create a logical, multi-level hierarchy. Group related items under new sub-category nodes. Go at least 2-3 levels deep where possible to break down complex ideas into smaller, digestible parts.
-4.  **Enrich Every Node:** This is crucial. For every single node you create, no matter how small, you MUST provide a concise and insightful 'summary'. This summary should explain the concept's purpose or provide a brief definition. This forces deeper understanding beyond simple text extraction.
-5.  **Categorize and Identify:** Assign an accurate 'type' to every node and a unique 'n' identifier (e.g., lowercase_snake_case of the text).
+1.  **Leverage Structure:** The input is in Markdown. Pay close attention to headings (#, ##) and lists (-). Use this hierarchy as a strong guide for creating the parent-child relationships in your mind map. Headings should almost always become parent nodes.
+2.  **Full-Text Analysis:** Read the ENTIRE text from start to finish to understand the main topics, their relationships, and the underlying concepts.
+3.  **Synthesize and Structure:** Instead of just copying headings, identify the core themes of the document. These will be your top-level nodes.
+4.  **Deepen the Hierarchy:** This is the most important instruction. Create a deeply nested, multi-level hierarchy. Your goal is to break down every concept into its smallest logical components. Do not stop at 2 or 3 levels; go as deep as the content allows, creating a rich tree structure. Use child nodes to represent sub-concepts, examples, types, or components of a parent topic.
+5.  **Extract and Enrich Every Node:** This is crucial. For every single node you create, you MUST provide a 'summary'.
+    *   **If the source text provides an explicit definition** (e.g., a term followed by a colon and a description like "Input Validation: Validate user input..."), you MUST use that exact definition as the summary.
+    *   **If there is no explicit definition**, then you should generate a concise and insightful summary that explains the concept's purpose.
+    This ensures the mind map accurately reflects the details in the source document.
+6.  **Categorize and Identify:** Assign an accurate 'type' to every node and a unique 'n' identifier (e.g., lowercase_snake_case of the text).
 
 For example, if the text has a section:
 ### Web Application Vulnerabilities
-- Broken Authentication
+- Broken Authentication: Flaws in how an application manages user identity.
   - Guess weak passwords
   - Brute-force attacks
 - SQL injection
 
-Your JSON should represent this with deep nesting and summaries for every node:
+Your JSON should represent this with deep nesting and summaries for every node, extracting the definition where available:
 {
   "n": "web_application_vulnerabilities",
   "text": "Web Application Vulnerabilities",
@@ -122,7 +117,7 @@ Your JSON should represent this with deep nesting and summaries for every node:
       "n": "broken_authentication",
       "text": "Broken Authentication", 
       "type": "CONCEPT",
-      "summary": "Flaws in how an application manages user identity and sessions, allowing unauthorized access.",
+      "summary": "Flaws in how an application manages user identity.",
       "children": [
         { 
           "n": "guess_weak_passwords", 
@@ -147,7 +142,7 @@ Your JSON should represent this with deep nesting and summaries for every node:
   ]
 }
 
-Now, apply this process to the entire "Extracted Document Text" provided above. Generate a single JSON object containing a "nodes" array that represents the complete, hierarchical, and fully-summarized structure of the document.`;
+Now, apply this process to the entire "Structured Document Content (Markdown)" provided above. Generate a single JSON object containing a "nodes" array that represents the complete, hierarchical, and fully-summarized structure of the document.`;
 
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
@@ -162,16 +157,16 @@ Now, apply this process to the entire "Extracted Document Text" provided above. 
                 responseMimeType: "application/json",
                 responseSchema: enhancedMindMapSchema,
                 temperature: 0.2,
-                maxOutputTokens: 8192,
-                thinkingConfig: { thinkingBudget: 256 },
             }
         });
 
-        const jsonText = response.text.trim();
-        if (!jsonText) {
-            throw new Error("Received empty response from AI when generating enhanced mind map.");
+        const textOutput = response.text;
+        if (!textOutput) {
+            console.error("Error generating mind map: AI response was empty or blocked.", response);
+            throw new Error("Received an empty or blocked response from the AI. The content may have violated safety policies.");
         }
         
+        const jsonText = textOutput.trim();
         const result = safeJsonParse<{ nodes: EnhancedNode[] }>(jsonText);
         if (result && Array.isArray(result.nodes)) {
             return result.nodes;
@@ -187,6 +182,60 @@ Now, apply this process to the entire "Extracted Document Text" provided above. 
              message += error.message;
         }
         throw new Error(message);
+    }
+}
+
+const imageLabelsSchema = {
+    type: Type.OBJECT,
+    properties: {
+        labels: {
+            type: Type.ARRAY,
+            description: "A list of identified labels from the image.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    label: { type: Type.STRING, description: "The identified label or object name." },
+                    summary: { type: Type.STRING, description: "A brief, one-sentence explanation of the identified part." }
+                },
+                required: ["label", "summary"]
+            }
+        }
+    },
+    required: ["labels"]
+};
+
+export async function identifyAndLabelImage(mimeType: string, data: string): Promise<{ label: string, summary: string }[]> {
+    try {
+        const systemInstruction = "You are a visual analysis expert. Your task is to examine the provided image and identify all distinct, labeled parts or significant objects within it. For each part you identify, provide its name and a concise, one-sentence summary explaining what it is or its function. Your response MUST be a single, valid JSON object that adheres to the schema.";
+
+        const prompt = "Please analyze the image and return a JSON object containing an array of labels for the distinct parts identified in the image. For example, if the image is a diagram of a flower, identify parts like 'Petal', 'Stamen', 'Pistil', etc.";
+
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [{
+                parts: [
+                    { text: prompt },
+                    { inlineData: { mimeType, data } }
+                ]
+            }],
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: imageLabelsSchema,
+                temperature: 0.3,
+            }
+        });
+
+        const jsonText = response.text.trim();
+        const result = safeJsonParse<{ labels: { label: string, summary: string }[] }>(jsonText);
+        if (result && Array.isArray(result.labels)) {
+            return result.labels;
+        }
+        throw new Error("AI did not return a valid list of labels.");
+
+    } catch (error) {
+        console.error("Error identifying and labeling image with Gemini:", error);
+        throw new Error(`Failed to identify labels: ${(error as Error).message}`);
     }
 }
 
@@ -344,6 +393,100 @@ Instructions:
     }
 }
 
+// --- Topic Hotspot Actions ---
+
+const explanationSchema = {
+    type: Type.OBJECT,
+    properties: {
+        explanation: {
+            type: Type.STRING,
+            description: "A new, alternative explanation for the concept, using a different analogy or perspective to make it easier to understand."
+        }
+    },
+    required: ["explanation"]
+};
+
+export async function explainConceptDifferently(topicText: string): Promise<string> {
+    const systemInstruction = "You are an AI Tutor who excels at explaining complex topics in simple and creative ways. A student is stuck on a concept and needs a fresh perspective.";
+    const prompt = `The student is struggling with the concept: "${topicText}". 
+    
+    Please provide a new, alternative explanation for this topic. Use a different analogy or frame it from a different perspective than a standard textbook definition. Keep the explanation concise and clear.`;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: explanationSchema,
+                temperature: 0.7,
+            }
+        });
+        const jsonText = response.text.trim();
+        const result = safeJsonParse<{ explanation: string }>(jsonText);
+        if (result && result.explanation) {
+            return result.explanation;
+        }
+        throw new Error("AI did not return a valid explanation.");
+    } catch(error) {
+        console.error("Error generating new explanation with Gemini:", error);
+        throw new Error(`Failed to generate new explanation: ${(error as Error).message}`);
+    }
+}
+
+const singleQuestionSchema = {
+    type: Type.OBJECT,
+    properties: {
+        questionText: { type: Type.STRING },
+        type: { type: Type.STRING, enum: ["multiple-choice", "short-answer"] },
+        options: { 
+            type: Type.ARRAY, 
+            items: { type: Type.STRING },
+            description: "An array of 4 strings for multiple-choice options. Null for short-answer.",
+        },
+        correctAnswer: { type: Type.STRING },
+        hint: { type: Type.STRING }
+    },
+    required: ["questionText", "type", "correctAnswer", "hint"]
+};
+
+
+export async function generateSingleQuestion(topicText: string): Promise<Omit<Question, 'id' | 'relatedNodeTopicText'>> {
+    const systemInstruction = "You are an AI Tutor creating a quick check-in question to help a student solidify their understanding of a specific topic.";
+    const prompt = `Please generate a single quiz question about the following topic: "${topicText}".
+
+Instructions:
+1. The question should directly test the core idea of the topic.
+2. Choose either 'multiple-choice' or 'short-answer' format.
+3. If multiple-choice, provide 4 distinct options.
+4. Provide a correct answer and a helpful hint.
+5. Your entire response MUST be a single, valid JSON object adhering to the schema.`;
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: singleQuestionSchema,
+                temperature: 0.8,
+            }
+        });
+        const jsonText = response.text.trim();
+        const result = safeJsonParse<Omit<Question, 'id' | 'relatedNodeTopicText'>>(jsonText);
+        if (result && result.questionText) {
+            return result;
+        }
+        throw new Error("AI did not return a valid question.");
+    } catch(error) {
+        console.error("Error generating single question with Gemini:", error);
+        throw new Error(`Failed to generate question: ${(error as Error).message}`);
+    }
+}
+
+
 // --- Study Sprint Generation ---
 
 const studySprintSchema = {
@@ -468,9 +611,50 @@ const ideasSchema = {
     required: ["ideas"]
 };
 
-export async function generateIdeasForNode(nodeText: string, profile?: LearningProfile): Promise<{text: string}[]> {
+export async function generateIdeasForNode(
+    nodeText: string,
+    mindMapContext: string,
+    documentsContext: string,
+    profile?: LearningProfile,
+    image?: { mimeType: string; data: string; }
+): Promise<{text: string}[]> {
     try {
-        let prompt = `Brainstorm a few related sub-topics for the following mind map node: "${nodeText}". Provide short, actionable phrases.`;
+        const contentParts: ({ text: string; } | { inlineData: { mimeType: string; data: string; }; })[] = [];
+        let promptIntro: string;
+
+        if (image) {
+            promptIntro = `You are an expert AI assistant helping a user expand their mind map.
+The user has selected a node with an image and the following caption: "${nodeText}".
+Your task is to brainstorm 3 to 5 new, related sub-topics or ideas that can be added as children to this selected node. Your ideas MUST be based on the visual content of the provided image.
+To generate the most relevant ideas, you MUST use the following context:`;
+            contentParts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
+        } else {
+            promptIntro = `You are an expert AI assistant helping a user expand their mind map.
+The user has selected a node with the text: "${nodeText}".
+Your task is to brainstorm 3 to 5 new, related sub-topics or ideas that can be added as children to this selected node.
+To generate the most relevant ideas, you MUST use the following context:`;
+        }
+
+        let prompt = `${promptIntro}
+
+**1. Full Mind Map Structure:**
+This is the structure of the entire mind map the user is working on. Use it to understand the relationships between topics and avoid suggesting ideas that are already present or out of place.
+\`\`\`
+${mindMapContext}
+\`\`\`
+
+**2. Content from User's Documents:**
+This is the source material the user has uploaded. Your ideas should be based on or inspired by this content. If no documents are provided, rely on the mind map context and your general knowledge.
+\`\`\`
+${documentsContext || 'No documents provided.'}
+\`\`\`
+
+**Instructions:**
+- Your ideas must be directly related to the selected node: "${nodeText}".
+- The ideas should be new and not already exist as children of the selected node in the mind map context.
+- Where possible, the ideas should be inspired by the provided document content.
+- Provide short, actionable phrases.
+- Your entire response MUST be a single, valid JSON object that adheres to the provided schema.`;
 
         if (profile) {
             if (profile.structurePreference > 0.4) { // Top-down learner
@@ -480,9 +664,11 @@ export async function generateIdeasForNode(nodeText: string, profile?: LearningP
             }
         }
 
+        contentParts.push({ text: prompt });
+
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
-            contents: prompt,
+            contents: { parts: contentParts },
             config: {
                 responseMimeType: "application/json",
                 responseSchema: ideasSchema,
@@ -690,7 +876,7 @@ export async function askChatQuestion(context: NodeContext, question: string, pr
         }
         
         if (context.image) {
-            promptText += `The student has selected a node with an following caption: "${context.currentNodeText}"\n`;
+            promptText += `The student has selected a node with an image and the following caption: "${context.currentNodeText}"\nYour answer MUST consider the content of the provided image.\n`;
         } else {
             promptText += `Current topic: "${context.currentNodeText}"\n`;
         }
@@ -715,7 +901,7 @@ export async function askChatQuestion(context: NodeContext, question: string, pr
         
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
-            contents: [{ parts: contentParts }],
+            contents: { parts: contentParts },
             config: {
               systemInstruction: systemInstruction,
               temperature: 0.7,

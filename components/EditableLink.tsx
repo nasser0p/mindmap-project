@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MindMapLink } from '../types';
@@ -118,20 +119,22 @@ const EditableLink: React.FC<EditableLinkProps> = ({ link, sourcePos, targetPos,
               {link.label}
               <AnimatePresence>
               {isSelected && (
-                <motion.button
-                  onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(link.id);
-                  }}
-                  className="absolute -top-3 -right-3 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow-md hover:bg-red-600"
-                  aria-label="Delete connection"
-                  initial={{scale: 0, opacity: 0}}
-                  animate={{scale: 1, opacity: 1}}
-                  exit={{scale: 0, opacity: 1}}
-                  transition={{type: 'spring', duration: 0.3, bounce: 0.5}}
-                >
-                  <i className="fa-solid fa-times text-xs" />
-                </motion.button>
+                <div className="absolute -top-4 -right-4 w-8 h-8 flex items-center justify-center">
+                    <motion.button
+                      onClick={(e) => {
+                          e.stopPropagation();
+                          onDelete(link.id);
+                      }}
+                      className="w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow-md hover:bg-red-600"
+                      aria-label="Delete connection"
+                      initial={{scale: 0, opacity: 0}}
+                      animate={{scale: 1, opacity: 1}}
+                      exit={{scale: 0, opacity: 1}}
+                      transition={{type: 'spring', duration: 0.3, bounce: 0.5}}
+                    >
+                      <i className="fa-solid fa-times text-xs" />
+                    </motion.button>
+                </div>
               )}
               </AnimatePresence>
             </div>

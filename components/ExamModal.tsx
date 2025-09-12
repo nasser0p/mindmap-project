@@ -12,6 +12,7 @@ type ExamState = {
 
 interface ExamModalProps {
   state: ExamState;
+  branchExamConfig?: { nodeId: string; nodeText: string; } | null;
   onStart: (config: ExamConfig) => void;
   onSubmit: (answers: Map<string, string>, revealedHints: Set<string>) => void;
   onClose: () => void;
@@ -27,7 +28,7 @@ const modalVariants = {
     visible: { opacity: 1, scale: 1 },
 };
 
-const ConfigView: React.FC<{ onStart: (config: ExamConfig) => void }> = ({ onStart }) => {
+const ConfigView: React.FC<{ onStart: (config: ExamConfig) => void, branchExamConfig?: { nodeText: string } | null }> = ({ onStart, branchExamConfig }) => {
     const [config, setConfig] = useState<ExamConfig>({
         type: 'Quiz',
         numQuestions: 5,
@@ -59,8 +60,12 @@ const ConfigView: React.FC<{ onStart: (config: ExamConfig) => void }> = ({ onSta
 
     return (
         <div className="w-full max-w-lg mx-auto bg-white dark:bg-slate-800 rounded-xl shadow-2xl p-6 md:p-8">
-            <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 text-center">Setup Your Exam</h2>
-            <p className="text-slate-500 dark:text-slate-400 text-center mt-1 mb-8">Customize your test to focus on what you need to learn.</p>
+            <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 text-center">
+                {branchExamConfig ? `Branch Exam: ${branchExamConfig.nodeText}` : 'Setup Your Exam'}
+            </h2>
+            <p className="text-slate-500 dark:text-slate-400 text-center mt-1 mb-8">
+                {branchExamConfig ? 'Test your knowledge on this specific topic.' : 'Customize your test to focus on what you need to learn.'}
+            </p>
             
             <div className="mb-6">
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Exam Type</label>
@@ -291,7 +296,7 @@ const ResultsView: React.FC<{ results: ExamResult, onClose: () => void }> = ({ r
     );
 };
 
-const ExamModal: React.FC<ExamModalProps> = ({ state, onStart, onSubmit, onClose }) => {
+const ExamModal: React.FC<ExamModalProps> = ({ state, branchExamConfig, onStart, onSubmit, onClose }) => {
     const { view, questions, results } = state;
 
     if (view === 'closed') return null;
@@ -327,7 +332,7 @@ const ExamModal: React.FC<ExamModalProps> = ({ state, onStart, onSubmit, onClose
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.2 }}
                         >
-                            {view === 'config' && <ConfigView onStart={onStart} />}
+                            {view === 'config' && <ConfigView onStart={onStart} branchExamConfig={branchExamConfig} />}
                             {view === 'loading' && <LoadingView />}
                             {view === 'active' && questions.length > 0 && <ExamActiveView questions={questions} onSubmit={onSubmit} />}
                             {view === 'results' && results && <ResultsView results={results} onClose={onClose} />}

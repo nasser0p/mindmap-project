@@ -2,8 +2,10 @@ import React, { useState, useCallback, useEffect, useMemo, lazy, Suspense, useRe
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from './contexts/AuthContext';
 import useMindMapData from './hooks/useMindMapData';
+import useIsMobile from './hooks/useIsMobile';
 import MindMap, { MindMapActions } from './components/MindMap';
-import Toolbar from './components/Toolbar';
+import Toolbar, { ToolMode } from './components/Toolbar';
+import MobileToolbar from './components/MobileToolbar';
 import { zoomIdentity, ZoomTransform } from 'd3-zoom';
 import SubjectTabs from './components/SubjectTabs';
 import Auth from './components/Auth';
@@ -11,9 +13,9 @@ import Spinner from './components/Spinner';
 import SubjectMasteryDisplay from './components/SubjectMasteryDisplay';
 import LandingPage from './components/LandingPage';
 import MindMapShell from './components/MindMapShell';
-import { storage } from './firebase';
-import { motion, AnimatePresence, Variants } from 'framer-motion';
-import { PALETTE_COLORS } from './constants';
+import { db, storage } from './firebase';
+import { motion, AnimatePresence } from 'framer-motion';
+import { processDocument } from './services/documentProcessor';
 import { 
     generateIdeasForNode, 
     rephraseNodeText, 
@@ -26,91 +28,30 @@ import {
     generateExamQuestions,
     gradeAndAnalyzeExam,
     generateStudySprint,
+    explainConceptDifferently,
+    generateSingleQuestion,
+    identifyAndLabelImage,
 } from './services/geminiService';
-import { MindMapNode, ChatMessage, Attachment, SourceDocumentFile, MindMapNodeData, ExamConfig, Question, ExamResult, StudySprint, LearningProfile, AiNudge } from './types';
+import { MindMapNode, ChatMessage, Attachment, SourceDocumentFile, MindMapNodeData, ExamConfig, Question, ExamResult, StudySprint, LearningProfile, AiNudge, GlowNode, GradedAnswer, FeedbackCategory, Chapter, SearchResult } from './types';
+import { SUPER_ADMIN_UID } from './constants';
+import ChapterSidebar from './components/ChapterSidebar';
 
 // Lazy-load components that are not critical for the initial render
+// FIX: The lazy import expects a module with a 'default' export. While the error points here, the fix is in AiAssistant.tsx to ensure it has a default export.
 const AiAssistant = lazy(() => import('./components/AiAssistant'));
 const ImageLightbox = lazy(() => import('./components/ImageLightbox'));
 const ExamModal = lazy(() => import('./components/ExamModal'));
 const StudySprintModal = lazy(() => import('./components/StudySprintModal'));
 const ThemeToggle = lazy(() => import('./components/ThemeToggle'));
+const WelcomeModal = lazy(() => import('./components/WelcomeModal'));
+const TutorialNudge = lazy(() => import('./components/TutorialNudge'));
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
+const GuidedReviewNudge = lazy(() => import('./components/GuidedReviewNudge'));
+const FeedbackButton = lazy(() => import('./components/FeedbackButton'));
+const FeedbackModal = lazy(() => import('./components/FeedbackModal'));
+const TouchSelectTip = lazy(() => import('./components/TouchSelectTip'));
+const ExamScopeModal = lazy(() => import('./components/ExamScopeModal'));
 
-
-// --- MultiNodeToolbar Component ---
-const MultiNodeToolbarButton = ({ icon, onClick, title, disabled = false }: { icon: string; onClick?: React.MouseEventHandler<HTMLButtonElement>; title: string; disabled?: boolean; }) => {
-    const baseClasses = 'w-9 h-9 rounded-md flex items-center justify-center transition-colors text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50';
-    return (
-        <button
-            onClick={onClick}
-            disabled={disabled}
-            className={baseClasses}
-            aria-label={title}
-            title={title}
-        >
-            <i className={`fa-solid ${icon}`}></i>
-        </button>
-    )
-}
-
-const dropdownVariants: Variants = {
-    hidden: { opacity: 0, y: 10, scale: 0.95, transition: { duration: 0.15 } },
-    visible: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', damping: 15, stiffness: 200 } },
-};
-
-interface MultiNodeToolbarProps {
-    count: number;
-    onDelete: () => void;
-    onSetColor: (color: string) => void;
-}
-
-const MultiNodeToolbar: React.FC<MultiNodeToolbarProps> = ({ count, onDelete, onSetColor }) => {
-    const [isColorPickerOpen, setIsColorPickerOpen] = useState(false);
-
-    return (
-        <motion.div
-            className="absolute top-44 left-6 z-20 bg-white/80 dark:bg-slate-800/80 backdrop-blur-md rounded-lg shadow-lg p-1 flex items-center gap-1 border border-slate-200/80 dark:border-slate-700/80"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        >
-            <div className="px-3 text-sm font-semibold text-slate-700 dark:text-slate-200">{count} nodes selected</div>
-            <div className="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1"></div>
-
-            <div className="relative" onMouseEnter={() => setIsColorPickerOpen(true)} onMouseLeave={() => setIsColorPickerOpen(false)}>
-                <MultiNodeToolbarButton icon="fa-palette" title="Change color" />
-                <AnimatePresence>
-                    {isColorPickerOpen && (
-                        <motion.div
-                            initial="hidden"
-                            animate="visible"
-                            exit="hidden"
-                            variants={dropdownVariants}
-                            className="absolute top-full left-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 p-2 z-10"
-                        >
-                            <div className="grid grid-cols-5 gap-2 p-1">
-                                {PALETTE_COLORS.map(color => (
-                                    <motion.button
-                                        key={color}
-                                        onClick={() => onSetColor(color)}
-                                        className="w-7 h-7 rounded-full"
-                                        style={{ backgroundColor: color }}
-                                        aria-label={`Set color to ${color}`}
-                                        title={`Set color to ${color}`}
-                                        whileHover={{ scale: 1.2, transition: { duration: 0.1 } }}
-                                        whileTap={{ scale: 0.9 }}
-                                    />
-                                ))}
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
-            <MultiNodeToolbarButton icon="fa-trash-can" onClick={onDelete} title="Delete selected nodes" />
-        </motion.div>
-    );
-};
 
 // --- Main App Component ---
 
@@ -143,6 +84,46 @@ type StudySprintState = {
     isLoading: boolean;
 };
 
+export type HotspotContent = {
+    view: 'main' | 'explaining' | 'quizzing' | 'loading';
+    explanation?: string;
+    quiz?: Question;
+    quizAnswer?: string;
+    isQuizCorrect?: boolean;
+};
+
+export type ContextMenuData = {
+    nodeId: string;
+    x: number;
+    y: number;
+} | null;
+
+// Helper function to fetch a file from a URL and convert it to a base64 string
+const fileUrlToBase64 = async (url: string): Promise<string> => {
+    // Note: This assumes the Firebase Storage URL is CORS-enabled for direct fetching.
+    // If CORS errors occur, a proxy would be needed, but the current error is 404.
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`HTTP error while fetching file! status: ${response.status}`);
+    }
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+                // The result includes a data URI prefix (e.g., "data:application/pdf;base64,").
+                // We need to strip this prefix to get the raw base64 data.
+                const base64String = reader.result.split(',')[1];
+                resolve(base64String);
+            } else {
+                reject(new Error("Failed to read file as a base64 string."));
+            }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+};
+
 
 const findNodePath = (root: MindMapNode, nodeId: string): string[] => {
     const path: MindMapNode[] = [];
@@ -171,10 +152,27 @@ const getAllNodes = (root: MindMapNode): MindMapNode[] => {
     return nodes;
 };
 
-const calculateOverallMastery = (root: MindMapNode): number => {
+const getBranchNodes = (rootNode: MindMapNode, branchRootId: string): MindMapNode[] => {
+    const branchRoot = findNodeRecursive(branchRootId, rootNode);
+    if (!branchRoot) return [];
+    return getAllNodes(branchRoot);
+};
+
+// Helper function to find a node by ID (used by getBranchNodes)
+const findNodeRecursive = (id: string, node: MindMapNode): MindMapNode | null => {
+  if (node.id === id) return node;
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findNodeRecursive(id, child);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
+const calculateOverallMastery = (chapters: Chapter[]): number => {
     const scores: { score: number; weight: number }[] = [];
     const traverse = (node: MindMapNode, depth: number) => {
-        // Default masteryScore to 0 if it's missing, null, or undefined.
         const score = node.masteryScore || 0;
         const weight = 1 / Math.pow(2, depth);
         scores.push({ score, weight });
@@ -182,7 +180,7 @@ const calculateOverallMastery = (root: MindMapNode): number => {
             node.children.forEach(child => traverse(child, depth + 1));
         }
     };
-    traverse(root, 0);
+    chapters.forEach(chapter => traverse(chapter.root, 0));
 
     if (scores.length === 0) return 0;
     
@@ -208,17 +206,56 @@ const ModalLoadingFallback = () => (
     </div>
 );
 
+// FIX: Added 'as const' to ensure placement property is inferred as a literal type, not a generic string.
+const tutorialSteps = [
+  // Part 1: The "Aha!" moment
+  { id: 'add-subject', targetId: 'add-subject', message: 'Click the "+" button to create your first subject.', placement: 'bottom' },
+  { id: 'open-ai-assistant', targetId: 'ai-assistant-bubble', message: 'Great! Now open the AI Assistant to automatically build your map from a document.', placement: 'top' },
+  { id: 'go-to-documents', targetId: 'documents-tab', message: 'Go to the "Documents" tab to manage your source files.', placement: 'top' },
+  { id: 'upload-file', targetId: 'upload-file-button', message: 'Upload a PDF or text file for the AI to analyze.', placement: 'bottom' },
+  { id: 'generate-nodes', targetId: 'generate-nodes-button', message: 'Click the magic wand to transform your document into a structured mind map!', placement: 'left' },
+  // Part 2: Feature Discovery
+  { id: 'add-child-node', targetId: 'add-child-node', message: 'Your map is created! You can add your own ideas by selecting a node and clicking the "+" button.', placement: 'bottom' },
+  { id: 'ai-assist', targetId: 'ai-assist-button', message: 'Use the AI Assist menu to brainstorm ideas, get analogies, and more for any selected node.', placement: 'bottom' },
+  { id: 'selection-tool', targetId: 'selection-tool', message: 'Use the Selection Tool to select multiple nodes at once to color or delete them.', placement: 'bottom' },
+  { id: 'mastery-display', targetId: 'mastery-display', message: 'This is your Mastery Score. Take AI-generated exams and complete study sprints to increase it!', placement: 'left' }
+] as const;
+
+export type HotspotData = { 
+    node: MindMapNode; 
+    incorrectQuestions: GradedAnswer[]; 
+    content: HotspotContent | null;
+} | null;
+
+// New helper function to serialize the mind map for the AI
+const serializeMindMap = (node: MindMapNode, indent = 0): string => {
+    let result = `${'  '.repeat(indent)}- ${node.text}\n`;
+    // Only include children if the node is not collapsed to respect user's view
+    if (node.children && !node.isCollapsed) {
+        for (const child of node.children) {
+            result += serializeMindMap(child, indent + 1);
+        }
+    }
+    return result;
+};
+
 
 const App: React.FC = () => {
   const { currentUser, loading: authLoading } = useAuth();
   const { 
-    documents, 
-    activeDocument,
+    subjects, 
+    activeSubject,
+    chapters,
+    activeChapter,
     loading: dataLoading,
-    switchActiveDocument,
-    addDocument,
-    deleteDocument,
-    updateDocumentName,
+    switchActiveSubject,
+    addSubject: originalAddSubject,
+    deleteSubject,
+    updateSubjectName,
+    addChapter,
+    deleteChapter,
+    renameChapter,
+    switchActiveChapter,
     addAttachment,
     updateAttachment,
     deleteAttachment,
@@ -236,16 +273,19 @@ const App: React.FC = () => {
     ...dataActions 
   } = useMindMapData(currentUser?.uid ?? null);
   
-  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
+  const [selectedNodeIds, setSelectedNodeIdsInternal] = useState<Set<string>>(new Set());
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [nodeToEditOnRender, setNodeToEditOnRender] = useState<string | null>(null);
+  const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState<AppAction>(null);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   const [generatingIdeasForNodeId, setGeneratingIdeasForNodeId] = useState<string | null>(null);
   const [rephrasingNodeId, setRephrasingNodeId] = useState<string | null>(null);
   const [extractingConceptsNodeId, setExtractingConceptsNodeId] = useState<string | null>(null);
   const [generatingAnalogyNodeId, setGeneratingAnalogyNodeId] = useState<string | null>(null);
+  const [identifyingLabelsNodeId, setIdentifyingLabelsNodeId] = useState<string | null>(null);
   const [generatingNodesFromFileId, setGeneratingNodesFromFileId] = useState<string | null>(null);
+  const [pastingImageNodeId, setPastingImageNodeId] = useState<string | null>(null);
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(false);
   const [aiSidebarTab, setAiSidebarTab] = useState<AiSidebarTab>('ai');
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -258,20 +298,84 @@ const App: React.FC = () => {
     results: null,
     questionToNodeIdMap: new Map(),
   });
+  const [isExamScopeModalOpen, setIsExamScopeModalOpen] = useState(false);
+  const [examScope, setExamScope] = useState<'chapter' | 'subject'>('chapter');
+  const [branchExamConfig, setBranchExamConfig] = useState<{ nodeId: string; nodeText: string; } | null>(null);
   const [studySprintState, setStudySprintState] = useState<StudySprintState>({
       view: 'closed',
       sprint: null,
       isLoading: false,
   });
-  const [glowingNodeIds, setGlowingNodeIds] = useState<string[]>([]);
+  const [glowingNodes, setGlowingNodes] = useState<GlowNode[]>([]);
+  const [lastCompletedExam, setLastCompletedExam] = useState<ExamState | null>(null);
+  const [activeHotspotNodeId, setActiveHotspotNodeId] = useState<string | null>(null);
+  const [hotspotContent, setHotspotContent] = useState<HotspotContent | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuData>(null);
+
+  // Guided Review State
+  const [showGuidedReviewNudge, setShowGuidedReviewNudge] = useState(false);
+  const [guidedReviewPath, setGuidedReviewPath] = useState<GlowNode[]>([]);
+  const [guidedReviewIndex, setGuidedReviewIndex] = useState(0);
+  const [isInGuidedReview, setIsInGuidedReview] = useState(false);
+
   const [aiNudge, setAiNudge] = useState<AiNudge | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('mindmap-theme') as 'light' | 'dark') || 'light';
   });
+  const [toolMode, setToolMode] = useState<ToolMode>('pan');
+  
+  // Search State
+  const [isFindInMapOpen, setIsFindInMapOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState<'chapter' | 'subject'>('chapter');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [currentSearchResultIndex, setCurrentSearchResultIndex] = useState(0);
+  const [nodeToCenterOn, setNodeToCenterOn] = useState<string | null>(null);
+  const [nodeToCenterAfterChapterSwitch, setNodeToCenterAfterChapterSwitch] = useState<string | null>(null);
+  
+  // Tutorial State
+  const [isWelcomeModalOpen, setIsWelcomeModalOpen] = useState(false);
+  const [tutorialStep, setTutorialStep] = useState<string | null>(null);
+  const currentTutorial = tutorialSteps.find(step => step.id === tutorialStep);
+  const isLastTutorialStep = currentTutorial ? tutorialSteps.findIndex(step => step.id === currentTutorial.id) === tutorialSteps.length - 1 : false;
 
+  // Feedback State
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
+  const [showTouchSelectTip, setShowTouchSelectTip] = useState(false);
+  
+  const isMobile = useIsMobile();
   const mindMapRef = useRef<MindMapActions>(null);
   const [zoomTransform, setZoomTransform] = useState<ZoomTransform>(zoomIdentity);
   
+  // Unauthenticated view state
+  const [authView, setAuthView] = useState<'landing' | 'login'>('landing');
+
+  // Derived state to determine if user is in an interactive review session
+  const isReviewModeActive = useMemo(() => glowingNodes.length > 0, [glowingNodes]);
+  
+  const handleToolChange = (mode: ToolMode) => {
+    setToolMode(mode);
+    // Show a one-time tip for touch users when they first enter select mode.
+    if (mode === 'select' && ('ontouchstart' in window) && !localStorage.getItem('mindmaster-touch-select-tip-shown')) {
+      setShowTouchSelectTip(true);
+    }
+  };
+
+  const dismissTouchSelectTip = () => {
+    setShowTouchSelectTip(false);
+    localStorage.setItem('mindmaster-touch-select-tip-shown', 'true');
+  };
+
+  const dismissGuidedReviewNudge = useCallback(() => {
+      setShowGuidedReviewNudge(false);
+  }, []);
+
+  const setSelectedNodeIds = useCallback((ids: Set<string> | ((current: Set<string>) => Set<string>)) => {
+    dismissGuidedReviewNudge();
+    setSelectedNodeIdsInternal(ids);
+  }, [dismissGuidedReviewNudge]);
+
+
   useEffect(() => {
     localStorage.setItem('mindmap-theme', theme);
     if (theme === 'dark') {
@@ -280,6 +384,70 @@ const App: React.FC = () => {
       document.documentElement.classList.remove('dark');
     }
   }, [theme]);
+  
+  useEffect(() => {
+    // Start tutorial for first-time users
+    if (!authLoading && !dataLoading && currentUser) {
+        const tutorialCompleted = localStorage.getItem('mindmaster-ai-tutorial-v1-completed');
+        if (!tutorialCompleted) {
+            // If there are no documents, show the welcome modal.
+            if (subjects.length === 0) {
+                setIsWelcomeModalOpen(true);
+            }
+        }
+    }
+  }, [currentUser, authLoading, dataLoading, subjects.length]);
+  
+  const advanceTutorial = (fromStep: string) => {
+    const currentIndex = tutorialSteps.findIndex(step => step.id === fromStep);
+    if (currentIndex > -1 && currentIndex + 1 < tutorialSteps.length) {
+        setTutorialStep(tutorialSteps[currentIndex + 1].id);
+    } else {
+        // End of tutorial
+        setTutorialStep(null);
+        localStorage.setItem('mindmaster-ai-tutorial-v1-completed', 'true');
+    }
+  };
+
+  const handleStartTutorial = () => {
+    setIsWelcomeModalOpen(false);
+    setTutorialStep(tutorialSteps[0].id);
+  };
+
+  const restartTutorial = useCallback(() => {
+    // We don't want the welcome modal again, just the nudges.
+    setIsWelcomeModalOpen(false);
+    setTutorialStep(tutorialSteps[0].id);
+  }, []);
+
+  const handleSkipTutorial = () => {
+    setTutorialStep(null);
+    localStorage.setItem('mindmaster-ai-tutorial-v1-completed', 'true');
+  };
+
+  const addSubject = useCallback(async () => {
+    const newDocId = await originalAddSubject();
+    if (newDocId) {
+        setEditingSubjectId(newDocId); // Set new subject to be editable
+        if (tutorialStep === 'add-subject') {
+            advanceTutorial('add-subject');
+        }
+    }
+  }, [originalAddSubject, tutorialStep]);
+
+  const handleOpenAiAssistant = () => {
+    setIsAiAssistantOpen(true);
+    if (tutorialStep === 'open-ai-assistant') {
+        advanceTutorial('open-ai-assistant');
+    }
+  };
+
+  const handleAiTabChange = (tab: AiSidebarTab) => {
+    setAiSidebarTab(tab);
+    if (tab === 'documents' && tutorialStep === 'go-to-documents') {
+        advanceTutorial('go-to-documents');
+    }
+  };
 
   const handleToggleTheme = () => {
     setTheme(prevTheme => (prevTheme === 'light' ? 'dark' : 'light'));
@@ -290,13 +458,14 @@ const App: React.FC = () => {
   const handleZoomToFit = () => mindMapRef.current?.zoomToFit();
 
   const handleTransformChange = useCallback((newTransform: ZoomTransform) => {
+      dismissGuidedReviewNudge();
       setZoomTransform(newTransform);
-  }, []);
+  }, [dismissGuidedReviewNudge]);
 
   const trackUserAction = useCallback((action: LearningActionType) => {
-    if (!activeDocument || !updateLearningProfile) return;
+    if (!activeSubject || !updateLearningProfile) return;
 
-    const currentProfile = activeDocument.learningProfile || {
+    const currentProfile = activeSubject.learningProfile || {
         analogyPreference: 0,
         structurePreference: 0,
         visualPreference: 0,
@@ -341,18 +510,21 @@ const App: React.FC = () => {
     
     // Persist to DB. We write every time for real-time adaptation.
     updateLearningProfile(newProfile);
-  }, [activeDocument, updateLearningProfile]);
+  }, [activeSubject, updateLearningProfile]);
 
   // This effect resets state ONLY when switching to a new subject/document.
   useEffect(() => {
-    setSelectedNodeIds(activeDocument ? new Set([activeDocument.root.id]) : new Set());
+    setSelectedNodeIds(activeChapter ? new Set([activeChapter.root.id]) : new Set());
     setFocusedNodeId(null);
     setIsAiAssistantOpen(false);
     setChatHistory([]);
     setAiSidebarTab('ai');
-    setGlowingNodeIds([]); // Clear glowing nodes when switching subjects
+    setGlowingNodes([]); // Clear glowing nodes when switching subjects
     setAiNudge(null); // Clear any nudge when switching subjects
-  }, [activeDocument?.id]); // Depend on the ID, not the object reference.
+    setIsFindInMapOpen(false); // Close find on document switch
+    setActiveHotspotNodeId(null); // Close hotspot
+    setContextMenu(null); // Close context menu
+  }, [activeSubject?.id, activeChapter?.id]); // Depend on the ID, not the object reference.
 
   const lastSelectedNodeId = useMemo(() => {
     if (selectedNodeIds.size === 0) return null;
@@ -368,17 +540,36 @@ const App: React.FC = () => {
   }, [lastSelectedNodeId]);
 
   const selectedNodesData = useMemo(() => {
-    if (selectedNodeIds.size === 0 || !activeDocument) return [];
+    if (selectedNodeIds.size === 0 || !activeChapter) return [];
     return Array.from(selectedNodeIds).map(id => dataActions.findNode(id)).filter(Boolean) as MindMapNode[];
-  }, [selectedNodeIds, activeDocument, dataActions]);
+  }, [selectedNodeIds, activeChapter, dataActions]);
 
   const overallMastery = useMemo(() => {
-    if (!activeDocument) return 0;
-    return calculateOverallMastery(activeDocument.root);
-  }, [activeDocument]);
+    if (chapters.length === 0) return 0;
+    return calculateOverallMastery(chapters);
+  }, [chapters]);
+  
+  const handleCloseFindInMap = useCallback(() => {
+    setIsFindInMapOpen(false);
+    setSearchQuery('');
+  }, []);
+
+  const handleDeleteSelectedNodes = useCallback((nodeIdsToDelete: Set<string>) => {
+    if (nodeIdsToDelete.size > 0) {
+        // Prevent deleting the root node.
+        const ids = new Set(nodeIdsToDelete);
+        if (activeChapter) {
+            ids.delete(activeChapter.root.id);
+        }
+        if (ids.size > 0) {
+            deleteMultipleNodes(ids);
+            setSelectedNodeIds(new Set<string>()); // Clear selection after deletion
+        }
+    }
+  }, [deleteMultipleNodes, setSelectedNodeIds, activeChapter]);
 
   useEffect(() => {
-    if (lastAction?.type === 'ADD_CHILD' && activeDocument) {
+    if (lastAction?.type === 'ADD_CHILD' && activeChapter) {
       const parentNode = dataActions.findNode(lastAction.parentId);
       if (parentNode?.children?.length) {
         const newNode = parentNode.children[parentNode.children.length - 1];
@@ -387,7 +578,23 @@ const App: React.FC = () => {
       }
       setLastAction(null);
     }
-  }, [activeDocument, lastAction, dataActions]);
+  }, [activeChapter, lastAction, dataActions, setSelectedNodeIds]);
+
+  const handleSetNodeImage = useCallback(async (nodeId: string, file: File) => {
+    if (!currentUser || !activeSubject) return;
+    trackUserAction('ADD_IMAGE');
+    const filePath = `users/${currentUser.uid}/${activeSubject.id}/nodeImages/${nodeId}-${file.name}`;
+    const fileRef = storage.ref(filePath);
+    try {
+        const snapshot = await fileRef.put(file);
+        const downloadURL = await snapshot.ref.getDownloadURL();
+        setNodeImage(nodeId, { downloadURL, storagePath: filePath, mimeType: file.type });
+    } catch (error) {
+        console.error("Error uploading node image:", error);
+        alert(`Image upload failed: ${(error as Error).message}`);
+    }
+  }, [setNodeImage, currentUser, activeSubject, trackUserAction]);
+
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -395,712 +602,825 @@ const App: React.FC = () => {
       if (event.key === 'Escape') {
         setViewingImage(null);
         setFocusedNodeId(null);
+        setActiveHotspotNodeId(null);
+        setContextMenu(null);
+        if (isFindInMapOpen) {
+            handleCloseFindInMap();
+        }
         if (examState.view === 'active' && !window.confirm("Are you sure you want to exit the exam? Your progress will be lost.")) {
           // Do nothing
         } else if (examState.view !== 'closed') {
            setExamState({ view: 'closed', config: null, questions: [], results: null, questionToNodeIdMap: new Map() });
+           setBranchExamConfig(null);
         }
          if (studySprintState.view !== 'closed') {
             setStudySprintState({ view: 'closed', sprint: null, isLoading: false });
         }
       }
 
+       // Ctrl+F or Cmd+F to open search
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+          event.preventDefault();
+          setIsFindInMapOpen(prev => !prev);
+          setSearchQuery('');
+      }
+
       // Don't trigger shortcuts if user is typing in an input/textarea
       const isEditingText = (event.target as HTMLElement)?.tagName === 'TEXTAREA' || (event.target as HTMLElement)?.tagName === 'INPUT';
       if (isEditingText) return;
 
-      // Undo/Redo logic
-      if (event.ctrlKey || event.metaKey) { // Handle Ctrl or Cmd key
-          if (event.key.toLowerCase() === 'z') {
-              event.preventDefault();
-              dataActions.undo();
-          } else if (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z')) {
-              event.preventDefault();
-              dataActions.redo();
-          }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeIds.size > 0) {
+          event.preventDefault(); // Prevent browser back navigation on Backspace
+          handleDeleteSelectedNodes(selectedNodeIds);
       }
 
-      // Edit on Enter
-      if (event.key === 'Enter' && selectedNodeIds.size === 1) {
-          event.preventDefault();
-          setNodeToEditOnRender(lastSelectedNodeId);
+      if (event.key.toLowerCase() === 'v') setToolMode('pan');
+      if (event.key === 'Control') {
+          if (toolMode !== 'select') handleToolChange('select');
       }
     };
+    
+    const handleKeyUp = (event: KeyboardEvent) => {
+        if (event.key === 'Control' && toolMode === 'select') {
+            handleToolChange('pan');
+        }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [examState.view, studySprintState.view, dataActions, lastSelectedNodeId, selectedNodeIds]);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [selectedNodeIds, handleDeleteSelectedNodes, isFindInMapOpen, handleCloseFindInMap, examState, studySprintState, toolMode]);
+  
+  const handlePaste = useCallback(async (event: ClipboardEvent) => {
+    if (selectedNodeIds.size !== 1) return;
+    const isEditingText = (event.target as HTMLElement)?.tagName === 'TEXTAREA' || (event.target as HTMLElement)?.tagName === 'INPUT';
+    if (isEditingText) return;
+    
+    const items = event.clipboardData?.items;
+    if (!items) return;
 
-  const handleNodeDrag = () => {
-    if (glowingNodeIds.length > 0) {
-      setGlowingNodeIds([]);
-    }
-    if(aiNudge){
-        setAiNudge(null);
-    }
-  };
-
-  const handleAddChildAndEdit = useCallback((parentId: string) => {
-    trackUserAction('MANUAL_ADD_CHILD');
-    dataActions.addChildNode(parentId, 'New Idea');
-    setLastAction({ type: 'ADD_CHILD', parentId });
-  },[dataActions, trackUserAction]);
-
-  const handleDeleteNode = useCallback((nodeIdToDelete: string) => {
-    if (activeDocument) {
-        const parent = findParentNode(activeDocument.root, nodeIdToDelete);
-        dataActions.deleteNode(nodeIdToDelete);
-        setSelectedNodeIds(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(nodeIdToDelete);
-            if (newSet.size === 0 && parent) {
-                newSet.add(parent.id);
-            } else if (newSet.size === 0) {
-                newSet.add(activeDocument.root.id);
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf("image") !== -1) {
+            const file = items[i].getAsFile();
+            if (file) {
+                const nodeId = Array.from(selectedNodeIds)[0];
+                setPastingImageNodeId(nodeId);
+                try {
+                    await handleSetNodeImage(nodeId, file);
+                } finally {
+                    setPastingImageNodeId(null);
+                }
             }
-            return newSet;
-        });
+            break;
+        }
     }
-  }, [dataActions, activeDocument]);
+  }, [selectedNodeIds, handleSetNodeImage]);
 
-  const handleDeleteSelectedNodes = useCallback((nodeIdsToDelete: Set<string>) => {
-    if (nodeIdsToDelete.size > 0) {
-        deleteMultipleNodes(nodeIdsToDelete);
-        setSelectedNodeIds(new Set()); // Clear selection after deletion
-    }
-  }, [deleteMultipleNodes]);
+  useEffect(() => {
+      document.addEventListener('paste', handlePaste);
+      return () => document.removeEventListener('paste', handlePaste);
+  }, [handlePaste]);
 
-  const handleSetMultipleNodesColor = useCallback((nodeIds: Set<string>, color: string) => {
-    updateMultipleNodesColor(nodeIds, color);
-  }, [updateMultipleNodesColor]);
+  // --- AI HANDLERS ---
 
   const handleGenerateIdeas = useCallback(async (nodeId: string) => {
-    const node = dataActions.findNode(nodeId);
-    if (!node || !activeDocument) return;
-    trackUserAction('GENERATE_IDEAS');
+    if (!activeChapter || !activeSubject) return;
     setGeneratingIdeasForNodeId(nodeId);
     try {
-        const ideas = await generateIdeasForNode(node.text, activeDocument.learningProfile);
-        if (ideas && ideas.length > 0) dataActions.addMultipleChildrenNode(nodeId, ideas);
-        else alert("The AI couldn't generate new ideas for this topic.");
+        const node = dataActions.findNode(nodeId);
+        if (!node) throw new Error("Node not found");
+
+        const mindMapContext = serializeMindMap(activeChapter.root);
+        
+        const fullDocText = await Promise.all(
+            activeSubject.sourceDocuments
+                .filter(doc => doc.status === 'ready')
+                .map(doc => processDocument(doc).catch(e => {
+                    console.error(`Failed to process document ${doc.name} for context:`, e);
+                    return '';
+                }))
+        );
+        const documentsContext = fullDocText.join('\n\n');
+
+        trackUserAction('GENERATE_IDEAS');
+
+        let imageContext: { mimeType: string; data: string; } | undefined = undefined;
+        if (node.image?.downloadURL && node.image?.mimeType) {
+            try {
+                const base64Data = await fileUrlToBase64(node.image.downloadURL);
+                imageContext = { mimeType: node.image.mimeType, data: base64Data };
+            } catch (error) {
+                console.error("Failed to fetch image for AI ideas generation:", error);
+            }
+        }
+        
+        const ideas = await generateIdeasForNode(
+            node.text, 
+            mindMapContext, 
+            documentsContext, 
+            activeSubject.learningProfile,
+            imageContext
+        );
+        
+        if (ideas.length > 0) {
+            dataActions.addMultipleChildrenNode(nodeId, ideas);
+        } else {
+            alert("The AI couldn't generate new ideas for this topic.");
+        }
+
     } catch (error) {
-        console.error("Failed to generate AI ideas:", error);
-        alert(`Error: ${(error as Error).message}`);
+        console.error("Error generating ideas:", error);
+        alert(`Failed to generate ideas: ${(error as Error).message}`);
     } finally {
         setGeneratingIdeasForNodeId(null);
     }
-  }, [dataActions, activeDocument, trackUserAction]);
+  }, [activeChapter, activeSubject, dataActions, trackUserAction]);
 
   const handleRephraseNode = useCallback(async (nodeId: string) => {
-      const node = dataActions.findNode(nodeId);
-      if (!node || !activeDocument || node.id === activeDocument.root.id) return;
-      setRephrasingNodeId(nodeId);
-      try {
-          const newText = await rephraseNodeText(node.text);
-          dataActions.updateNodeText(nodeId, newText);
-      } catch (error) {
-          console.error("Failed to rephrase node:", error);
-          alert(`Error: ${(error as Error).message}`);
-      } finally {
-          setRephrasingNodeId(null);
-      }
-  }, [dataActions, activeDocument]);
-  
-  const handleExtractConcepts = useCallback(async (nodeId: string) => {
-      const node = dataActions.findNode(nodeId);
-      if (!node || !node.children || node.children.length === 0) return;
-      setExtractingConceptsNodeId(nodeId);
-      try {
-          const childrenTexts = node.children.map(c => c.text);
-          const concepts = await extractKeyConcepts(node.text, childrenTexts);
-           if (concepts && concepts.length > 0) dataActions.addMultipleChildrenNode(nodeId, concepts);
-           else alert("The AI couldn't extract key concepts.");
-      } catch (error) {
-          console.error("Failed to extract key concepts:", error);
-          alert(`Error: ${(error as Error).message}`);
-      } finally {
-          setExtractingConceptsNodeId(null);
-      }
+    setRephrasingNodeId(nodeId);
+    try {
+        const node = dataActions.findNode(nodeId);
+        if (!node) throw new Error("Node not found");
+        const rephrasedText = await rephraseNodeText(node.text);
+        dataActions.updateNodeText(nodeId, rephrasedText);
+    } catch (error) {
+        console.error("Error rephrasing node:", error);
+        alert(`Failed to rephrase text: ${(error as Error).message}`);
+    } finally {
+        setRephrasingNodeId(null);
+    }
   }, [dataActions]);
 
-   const handleGenerateAnalogy = useCallback(async (nodeId: string) => {
-    const node = dataActions.findNode(nodeId);
-    if (!node || !activeDocument || node.id === activeDocument.root.id) return;
-    trackUserAction('GENERATE_ANALOGY');
-    setGeneratingAnalogyNodeId(nodeId);
+  const handleExtractKeyConcepts = useCallback(async (nodeId: string) => {
+    setExtractingConceptsNodeId(nodeId);
     try {
-        const analogy = await generateAnalogy(node.text, activeDocument.learningProfile);
-        dataActions.addChildNode(nodeId, analogy);
-    } catch (error) {
-        console.error("Failed to generate analogy:", error);
-        alert(`Error: ${(error as Error).message}`);
+        const node = dataActions.findNode(nodeId);
+        if (!node || !node.children) throw new Error("Node or children not found");
+        const childrenTexts = node.children.map(c => c.text);
+        const concepts = await extractKeyConcepts(node.text, childrenTexts);
+        if (concepts.length > 0) {
+            dataActions.addMultipleChildrenNode(nodeId, concepts);
+        } else {
+            alert("The AI couldn't find distinct key concepts to extract.");
+        }
+    } catch(error) {
+        console.error("Error extracting concepts:", error);
+        alert(`Failed to extract concepts: ${(error as Error).message}`);
+    } finally {
+        setExtractingConceptsNodeId(null);
+    }
+  }, [dataActions]);
+
+  const handleGenerateAnalogy = useCallback(async (nodeId: string) => {
+    setGeneratingAnalogyNodeId(nodeId);
+    trackUserAction('GENERATE_ANALOGY');
+    try {
+        const node = dataActions.findNode(nodeId);
+        if (!node) throw new Error("Node not found");
+        const analogy = await generateAnalogy(node.text, activeSubject?.learningProfile);
+        const newNodeId = dataActions.addChildNode(nodeId, analogy);
+        if (newNodeId) {
+            setSelectedNodeIds(new Set([newNodeId]));
+        }
+    } catch(error) {
+        console.error("Error generating analogy:", error);
+        alert(`Failed to generate analogy: ${(error as Error).message}`);
     } finally {
         setGeneratingAnalogyNodeId(null);
     }
-  }, [dataActions, activeDocument, trackUserAction]);
-
-  const handleAiChatSubmit = useCallback(async (question: string) => {
-      if (selectedNodesData.length === 0 || !activeDocument) return;
-      trackUserAction('ASK_DIRECT_QUESTION');
-      setChatHistory(prev => [...prev, { role: 'user', text: question }]);
-      setIsAiReplying(true);
-      try {
-          const context: NodeContext = {
-            path: [],
-            currentNodeText: '',
-            childrenTexts: [],
-          };
-          
-          if (selectedNodesData.length === 1) {
-              const node = selectedNodesData[0];
-              context.path = findNodePath(activeDocument.root, node.id);
-              context.currentNodeText = node.text;
-              context.childrenTexts = node.children?.map(c => c.text) ?? [];
-              if (node.image?.downloadURL) {
-                  const response = await fetch(node.image.downloadURL);
-                  const blob = await response.blob();
-                  const dataUrl = await new Promise<string>(resolve => {
-                      const reader = new FileReader();
-                      reader.onload = () => resolve(reader.result as string);
-                      reader.readAsDataURL(blob);
-                  });
-                  const match = dataUrl.match(/^data:(.+);base64,(.+)$/);
-                  if (match) context.image = { mimeType: match[1], data: match[2] };
-              }
-          } else {
-              // Create a serialized string of the selected nodes and their direct relationships
-              const serializeSelection = (nodes: MindMapNode[]): string => {
-                  let contextString = "The user has selected multiple related nodes:\n";
-                  const nodeMap = new Map(nodes.map(n => [n.id, n]));
-                  const parentChildMap = new Map<string, string[]>();
-                  
-                  nodes.forEach(node => {
-                      const parent = findParentNode(activeDocument.root, node.id);
-                      if (parent && nodeMap.has(parent.id)) {
-                          if (!parentChildMap.has(parent.id)) parentChildMap.set(parent.id, []);
-                          parentChildMap.get(parent.id)!.push(node.text);
-                      }
-                  });
-
-                  nodes.forEach(node => {
-                      if (!nodes.some(n => n.children?.some(c => c.id === node.id))) {
-                          contextString += `- "${node.text}"`;
-                          if (parentChildMap.has(node.id)) {
-                              contextString += ` which has the following selected children: [${parentChildMap.get(node.id)!.join(', ')}]`;
-                          }
-                          contextString += "\n";
-                      }
-                  });
-                  return contextString;
-              };
-              context.currentNodeText = serializeSelection(selectedNodesData);
-          }
-
-          const answer = await askChatQuestion(context, question, activeDocument.learningProfile);
-          setChatHistory(prev => [...prev, { role: 'model', text: answer }]);
-      } catch (error) {
-          console.error("Failed to get chat response:", error);
-          setChatHistory(prev => [...prev, { role: 'model', text: `Sorry, I ran into an error. ${(error as Error).message}` }]);
-      } finally {
-          setIsAiReplying(false);
-      }
-  }, [selectedNodesData, activeDocument, trackUserAction]);
-
-  const handleSetNodeColor = useCallback((nodeId: string, color: string) => {
-      if (!activeDocument) return;
-      dataActions.updateNodeColor(nodeId, color);
-  }, [dataActions, activeDocument]);
-
-  const handleShowAttachments = useCallback((nodeId: string) => {
-    setSelectedNodeIds(new Set([nodeId]));
-    setAiSidebarTab('attachments');
-    setIsAiAssistantOpen(true);
-  }, []);
-
-  const uploadToStorage = async (file: File, path: string): Promise<{ downloadURL: string, storagePath: string }> => {
-    const storageRef = storage.ref(path);
-    const snapshot = await storageRef.put(file);
-    const downloadURL = await snapshot.ref.getDownloadURL();
-    return { downloadURL, storagePath: path };
-  };
-
-  const handleAddAttachment = useCallback(async (nodeId: string, attachmentData: Omit<Attachment, 'id'>, file?: File) => {
-    if (!currentUser) return;
-    if (file && attachmentData.type === 'image') {
-        trackUserAction('ADD_IMAGE');
-        const storagePath = `users/${currentUser.uid}/attachments/${uuidv4()}-${file.name}`;
-        const { downloadURL } = await uploadToStorage(file, storagePath);
-        const finalAttachment: Omit<Attachment, 'id'> = {
-            type: 'image',
-            content: { downloadURL, storagePath, name: file.name }
-        };
-        addAttachment(nodeId, finalAttachment);
-    } else {
-        addAttachment(nodeId, attachmentData);
-    }
-  }, [addAttachment, currentUser, trackUserAction]);
-
-  const handleUpdateAttachment = useCallback((nodeId: string, attachmentId: string, updatedContent: Attachment['content']) => {
-    updateAttachment(nodeId, attachmentId, updatedContent);
-  }, [updateAttachment]);
-
-  const handleDeleteAttachment = useCallback(async (nodeId: string, attachmentId: string) => {
-    const node = dataActions.findNode(nodeId);
-    const attachment = node?.attachments?.find(a => a.id === attachmentId);
-    if (attachment?.type === 'image' && attachment.content.storagePath) {
-        const storageRef = storage.ref(attachment.content.storagePath);
-        try { await storageRef.delete(); } catch (e) { console.error("Error deleting attachment from storage", e); }
-    }
-    deleteAttachment(nodeId, attachmentId);
-  }, [deleteAttachment, dataActions]);
-
-  const handleSetNodeImage = useCallback(async (nodeId: string, file: File) => {
-    if (!currentUser) return;
-    trackUserAction('ADD_IMAGE');
-    const oldNode = dataActions.findNode(nodeId);
-    if (oldNode?.image?.storagePath) {
-        try { await storage.ref(oldNode.image.storagePath).delete(); } catch(e) { console.error("Error deleting old image", e); }
-    }
-    const storagePath = `users/${currentUser.uid}/node-images/${uuidv4()}-${file.name}`;
-    const { downloadURL } = await uploadToStorage(file, storagePath);
-    setNodeImage(nodeId, { downloadURL, storagePath });
-  }, [currentUser, setNodeImage, dataActions, trackUserAction]);
-
-  const handleRemoveNodeImage = useCallback(async (nodeId: string) => {
-    const node = dataActions.findNode(nodeId);
-    if(node?.image?.storagePath) {
-        try { await storage.ref(node.image.storagePath).delete(); } catch(e) { console.error("Error deleting image", e); }
-    }
-    setNodeImage(nodeId, null);
-  }, [setNodeImage, dataActions]);
-
-  const handleViewImage = useCallback((downloadURL: string) => setViewingImage(downloadURL), []);
-  const handleCloseImageView = useCallback(() => setViewingImage(null), []);
-
-  const handleInsertParentNode = useCallback((childId: string) => {
-    const parent = findParentNodeFromHook(childId);
-    if (parent) {
-      const newId = insertNodeBetween(parent.id, childId);
-      if (newId) {
-        setSelectedNodeIds(new Set([newId]));
-        setNodeToEditOnRender(newId);
-      }
-    }
-  }, [findParentNodeFromHook, insertNodeBetween]);
-
-  const handleUploadFile = useCallback(async (file: File) => {
-    if (!activeDocument || !currentUser) return;
-    const tempId = uuidv4();
-    const storagePath = `users/${currentUser.uid}/source-docs/${activeDocument.id}/${uuidv4()}-${file.name}`;
-    
-    setUploadingFiles(prev => new Map(prev).set(tempId, file));
-    addSourceDocument({ id: tempId, name: file.name, mimeType: file.type, status: 'uploading', storagePath, downloadURL: '' });
-    
+  }, [dataActions, activeSubject, trackUserAction, setSelectedNodeIds]);
+  
+  const handleIdentifyAndLabel = useCallback(async (nodeId: string) => {
+    if (!activeChapter) return;
+    setIdentifyingLabelsNodeId(nodeId);
     try {
-      const { downloadURL } = await uploadToStorage(file, storagePath);
-      updateSourceDocument(tempId, { status: 'ready', storagePath, downloadURL });
-      setUploadingFiles(prev => {
-        const newMap = new Map(prev);
-        newMap.delete(tempId);
-        return newMap;
-      });
-    } catch (e) {
-      console.error("File upload failed:", e);
-      updateSourceDocument(tempId, { status: 'error', errorMessage: (e as Error).message });
-    }
-  }, [activeDocument, currentUser, addSourceDocument, updateSourceDocument]);
-
-  const handleRetryUpload = useCallback(async (fileInfo: SourceDocumentFile) => {
-    const fileToRetry = uploadingFiles.get(fileInfo.id);
-    if (!fileToRetry) {
-      alert("Could not find the original file to retry the upload. Please try uploading it again.");
-      console.error("Original file not found for retry:", fileInfo.id);
-      return;
-    }
-
-    updateSourceDocument(fileInfo.id, { status: 'uploading', errorMessage: '' });
-
-    try {
-      const { downloadURL } = await uploadToStorage(fileToRetry, fileInfo.storagePath);
-      updateSourceDocument(fileInfo.id, { status: 'ready', storagePath: fileInfo.storagePath, downloadURL });
-      setUploadingFiles(prev => {
-        const newMap = new Map(prev);
-        newMap.delete(fileInfo.id);
-        return newMap;
-      });
-    } catch (e) {
-      console.error("File retry upload failed:", e);
-      updateSourceDocument(fileInfo.id, { status: 'error', errorMessage: (e as Error).message });
-    }
-  }, [uploadingFiles, updateSourceDocument]);
-  
-  const handleGenerateNodesFromDoc = useCallback(async (file: SourceDocumentFile) => {
-    if (selectedNodeIds.size !== 1 || !file.downloadURL) {
-      alert("Please select a single node to attach the generated content to.");
-      return;
-    }
-    trackUserAction('GENERATE_FROM_FILE');
-    const node = dataActions.findNode(lastSelectedNodeId!);
-    if (!node) return;
-  
-    setGeneratingNodesFromFileId(file.id);
-    try {
-      updateSourceDocument(file.id, { status: 'processing' });
-      
-      // Step 1: Process document to extract text (now dynamically imported)
-      const { processDocument } = await import('./services/documentProcessor');
-      const extractedText = await processDocument(file);
-
-      if (extractedText.startsWith('Cannot process file type')) {
-          throw new Error(extractedText);
-      }
-      
-      // Step 2: Fetch the original file to get its raw data for the AI model's visual context
-      const response = await fetch(file.downloadURL);
-      if (!response.ok) {
-        throw new Error(`Failed to download file for analysis: ${response.statusText}`);
-      }
-      const blob = await response.blob();
-  
-      const base64Data = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = (reader.result as string).split(',')[1];
-          if (base64) resolve(base64);
-          else reject(new Error("Failed to read file as Base64."));
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-  
-      // Step 3: Call Gemini with both extracted text and the raw file data
-      const newNodes = await generateEnhancedMindMapFromFile(extractedText, base64Data, file.mimeType, node.text);
-  
-      const convertEnhancedNode = (enhancedNode: EnhancedNode): MindMapNodeData => {
-          const mindMapNodeData: MindMapNodeData = {
-              text: enhancedNode.text,
-          };
-          
-          const children: MindMapNodeData[] = [];
-          if (enhancedNode.summary) {
-              children.push({ text: enhancedNode.summary });
-          }
-          if (enhancedNode.children) {
-              children.push(...enhancedNode.children.map(convertEnhancedNode));
-          }
-  
-          if (children.length > 0) {
-              mindMapNodeData.children = children;
-          }
-      
-          return mindMapNodeData;
-      };
-
-      if (newNodes && newNodes.length > 0) {
-        newNodes.forEach(newNode => {
-            addNodeWithChildren(lastSelectedNodeId!, convertEnhancedNode(newNode));
-        });
-      } else {
-        alert("The AI couldn't generate a summary from this document.");
-      }
-  
-      updateSourceDocument(file.id, { status: 'ready' });
-    } catch (e) {
-      const error = e as Error;
-      console.error("Node generation from file failed:", error);
-      alert(`Error generating from file: ${error.message}`);
-      updateSourceDocument(file.id, { status: 'error', errorMessage: error.message });
-    } finally {
-      setGeneratingNodesFromFileId(null);
-    }
-  }, [selectedNodeIds, lastSelectedNodeId, dataActions, updateSourceDocument, addNodeWithChildren, trackUserAction]);
-  
-  const handleDeleteFile = useCallback(async (file: SourceDocumentFile) => {
-    if(window.confirm("Are you sure you want to remove this document? This cannot be undone.")) {
-        try {
-            if (file.storagePath) {
-                 await storage.ref(file.storagePath).delete();
-            }
-        } catch (e: any) {
-            if (e.code !== 'storage/object-not-found') {
-                console.error("Error deleting from storage, but proceeding to delete database entry:", e);
-            }
+        const node = dataActions.findNode(nodeId);
+        if (!node?.image?.downloadURL || !node.image.mimeType) {
+            throw new Error("Node has no image to analyze.");
         }
-        
-        try {
-            deleteSourceDocument(file.id);
-            setUploadingFiles(prev => {
-                const newMap = new Map(prev);
-                newMap.delete(file.id);
-                return newMap;
-            });
-        } catch(e) {
-            console.error("Failed to delete source file record", e);
-            alert("Error deleting file. Please try again.");
+
+        const base64Data = await fileUrlToBase64(node.image.downloadURL);
+        const labeledItems = await identifyAndLabelImage(node.image.mimeType, base64Data);
+
+        if (labeledItems.length > 0) {
+            const ideas = labeledItems.map(item => ({
+                text: item.label,
+                note: item.summary
+            }));
+            dataActions.addMultipleChildrenNode(nodeId, ideas);
+        } else {
+            alert("The AI couldn't identify any specific labels in this image.");
         }
-    }
-  }, [deleteSourceDocument]);
-
-  const serializeMindMapForAI = (node: MindMapNode, indent = ''): string => {
-      let result = `${indent}- ${node.text} (Mastery: ${Math.round((node.masteryScore || 0) * 100)}%)\n`;
-      if (node.children && !node.isCollapsed) {
-          for (const child of node.children) {
-              result += serializeMindMapForAI(child, indent + '  ');
-          }
-      }
-      return result;
-  };
-  
-  const getDocumentContext = async (): Promise<string> => {
-    if (!activeDocument?.sourceDocuments) return '';
-    
-    // NOTE: This is a placeholder for server-side text extraction.
-    // Client-side PDF/DOCX parsing is too heavy. For now, we'll just use file names as context.
-    const fileNames = activeDocument.sourceDocuments
-        .filter(doc => doc.status === 'ready')
-        .map(doc => doc.name)
-        .join(', ');
-
-    return fileNames ? `The user has uploaded the following documents: ${fileNames}.` : '';
-  };
-
-
-  const mapTopicToNodeId = useCallback((topicText: string, rootNode: MindMapNode): string | null => {
-      let bestMatchId: string | null = null;
-      let highestSimilarity = 0.5; // Require at least 50% similarity
-
-      function simplifiedJaccard(a: string, b: string): number {
-          const setA = new Set(a.toLowerCase().split(/\s+/));
-          const setB = new Set(b.toLowerCase().split(/\s+/));
-          const intersection = new Set([...setA].filter(x => setB.has(x)));
-          const union = new Set([...setA, ...setB]);
-          return union.size === 0 ? 0 : intersection.size / union.size;
-      }
-      
-      function traverse(node: MindMapNode) {
-          const similarity = simplifiedJaccard(topicText, node.text);
-          if (similarity > highestSimilarity) {
-              highestSimilarity = similarity;
-              bestMatchId = node.id;
-          }
-          if(node.children) node.children.forEach(traverse);
-      }
-      traverse(rootNode);
-      return bestMatchId;
-  }, []);
-
-  const handleStartExam = useCallback(async (config: ExamConfig) => {
-    if (!activeDocument) return;
-    setGlowingNodeIds([]);
-    setAiNudge(null);
-    setExamState(prev => ({ ...prev, view: 'loading', config }));
-
-    try {
-        const mindMapContext = serializeMindMapForAI(activeDocument.root);
-        const documentsContext = await getDocumentContext();
-
-        const rawQuestions = await generateExamQuestions(config, mindMapContext, documentsContext);
-        
-        const newQuestionToNodeIdMap = new Map<string, string>();
-        const questionsWithIds: Question[] = rawQuestions.map(q => {
-            const id = uuidv4();
-            if (q.relatedNodeTopicText) {
-                const nodeId = mapTopicToNodeId(q.relatedNodeTopicText, activeDocument.root);
-                if(nodeId) newQuestionToNodeIdMap.set(id, nodeId);
-            }
-            return { ...q, id };
-        });
-
-        setExamState(prev => ({
-            ...prev,
-            view: 'active',
-            questions: questionsWithIds,
-            questionToNodeIdMap: newQuestionToNodeIdMap,
-        }));
 
     } catch (error) {
-        console.error("Failed to start exam:", error);
-        alert(`Error: ${(error as Error).message}`);
-        setExamState(prev => ({ ...prev, view: 'config' }));
+        console.error("Error identifying and labeling image:", error);
+        alert(`Failed to identify labels: ${(error as Error).message}`);
+    } finally {
+        setIdentifyingLabelsNodeId(null);
     }
-  }, [activeDocument, mapTopicToNodeId]);
+  }, [activeChapter, dataActions]);
 
-  const handleSubmitExam = useCallback(async (answers: Map<string, string>, revealedHints: Set<string>) => {
-    if (!activeDocument) return;
-    setExamState(prev => ({ ...prev, view: 'loading' }));
+  const handleAiChatSubmit = useCallback(async (question: string) => {
+    if (!activeChapter || selectedNodeIds.size === 0) return;
+    setIsAiReplying(true);
+    setChatHistory(prev => [...prev, { role: 'user', text: question }]);
+    trackUserAction('ASK_DIRECT_QUESTION');
+
     try {
-        const results = await gradeAndAnalyzeExam(examState.questions, answers);
-        
-        const incorrectNodeIds = new Set<string>();
-        const nodePerformance = new Map<string, { correct: number; total: number }>();
+        const mainNodeId = Array.from(selectedNodeIds)[0];
+        const mainNode = dataActions.findNode(mainNodeId);
+        if (!mainNode) throw new Error("Selected node not found");
 
-        results.analysis.forEach((ans, index) => {
-            const question = examState.questions[index];
-            const nodeId = examState.questionToNodeIdMap.get(question.id);
-            if (nodeId) {
-                if (!nodePerformance.has(nodeId)) {
-                    nodePerformance.set(nodeId, { correct: 0, total: 0 });
-                }
-                const perf = nodePerformance.get(nodeId)!;
-                perf.total++;
-                if (ans.isCorrect) {
-                    perf.correct++;
-                } else {
-                    incorrectNodeIds.add(nodeId);
-                }
+        const context: NodeContext = {
+            path: findNodePath(activeChapter.root, mainNodeId),
+            currentNodeText: mainNode.text,
+            childrenTexts: mainNode.children?.map(c => c.text) || []
+        };
+        
+        if (mainNode.image?.downloadURL && mainNode.image.mimeType) {
+            try {
+                const base64Data = await fileUrlToBase64(mainNode.image.downloadURL);
+                context.image = {
+                    mimeType: mainNode.image.mimeType,
+                    data: base64Data
+                };
+            } catch (error) {
+                console.error("Failed to fetch image for AI chat:", error);
+                // Non-fatal, proceed without image context
+            }
+        }
+
+        const responseText = await askChatQuestion(context, question, activeSubject?.learningProfile);
+        setChatHistory(prev => [...prev, { role: 'model', text: responseText }]);
+
+    } catch (error) {
+        console.error("Error getting AI chat response:", error);
+        const errorMessage = `Sorry, I encountered an error: ${(error as Error).message}`;
+        setChatHistory(prev => [...prev, { role: 'model', text: errorMessage }]);
+    } finally {
+        setIsAiReplying(false);
+    }
+  }, [activeChapter, selectedNodeIds, dataActions, activeSubject, trackUserAction]);
+
+  const handleGenerateNodesFromFile = useCallback(async (file: SourceDocumentFile) => {
+    if (!activeChapter || !activeSubject) return;
+    const parentNodeId = lastSelectedNodeId || activeChapter.root.id;
+    setGeneratingNodesFromFileId(file.id);
+    try {
+        const parentNode = dataActions.findNode(parentNodeId);
+        if (!parentNode) throw new Error("Parent node not found");
+
+        // Step 1: Process the document to get its text content
+        const extractedText = await processDocument(file);
+        
+        // Step 2: Get base64 data for multimodal analysis
+        const base64Data = await fileUrlToBase64(file.downloadURL);
+
+        // Step 3: Call the enhanced Gemini service
+        const enhancedNodes = await generateEnhancedMindMapFromFile(
+            extractedText, 
+            base64Data, 
+            file.mimeType, 
+            parentNode.text
+        );
+
+        // Step 4: Add the generated nodes to the mind map
+        // FIX: 'addNodeWithChildren' was being called on 'dataActions' but it was destructured directly from the hook.
+        enhancedNodes.forEach(nodeData => {
+            addNodeWithChildren(parentNodeId, nodeData);
+        });
+
+        if (tutorialStep === 'generate-nodes') {
+            advanceTutorial('generate-nodes');
+        }
+
+    } catch (error) {
+        console.error("Error generating nodes from file:", error);
+        alert(`Failed to generate mind map: ${(error as Error).message}`);
+    } finally {
+        setGeneratingNodesFromFileId(null);
+    }
+  }, [activeChapter, activeSubject, lastSelectedNodeId, dataActions, tutorialStep, addNodeWithChildren]);
+  
+  const handleFileUpload = useCallback(async (file: File) => {
+    if (!currentUser || !activeSubject) return;
+    const fileId = uuidv4();
+    const newFile: SourceDocumentFile = {
+        id: fileId,
+        name: file.name,
+        storagePath: '',
+        downloadURL: '',
+        mimeType: file.type,
+        status: 'uploading',
+    };
+    addSourceDocument(newFile);
+
+    const filePath = `users/${currentUser.uid}/${activeSubject.id}/sourceDocuments/${fileId}-${file.name}`;
+    const fileRef = storage.ref(filePath);
+    try {
+        const snapshot = await fileRef.put(file);
+        const downloadURL = await snapshot.ref.getDownloadURL();
+        updateSourceDocument(fileId, { downloadURL, storagePath: filePath, status: 'ready' });
+        if (tutorialStep === 'upload-file') {
+            advanceTutorial('upload-file');
+        }
+    } catch (error) {
+        console.error("Error uploading source file:", error);
+        updateSourceDocument(fileId, { status: 'error', errorMessage: (error as Error).message });
+    }
+  }, [addSourceDocument, updateSourceDocument, currentUser, activeSubject, tutorialStep]);
+
+  const handleDeleteFile = useCallback(async (file: SourceDocumentFile) => {
+      if (!window.confirm(`Are you sure you want to delete "${file.name}"?`)) return;
+      try {
+        await storage.ref(file.storagePath).delete();
+        deleteSourceDocument(file.id);
+      } catch (error) {
+          console.error("Error deleting source file:", error);
+          if ((error as any).code === 'storage/object-not-found') {
+              console.warn("File not found in storage, deleting from Firestore anyway.");
+              deleteSourceDocument(file.id);
+          } else {
+             alert(`Failed to delete file: ${(error as Error).message}`);
+          }
+      }
+  }, [deleteSourceDocument]);
+
+  // --- Exam Handlers ---
+  const handleStartExam = useCallback(async (config: ExamConfig, branchNodeId?: string) => {
+    if (!activeSubject || !activeChapter) return;
+    setExamState(prev => ({ ...prev, view: 'loading' }));
+
+    try {
+        let mindMapContext: string;
+        let documents: SourceDocumentFile[] = [];
+
+        if (branchNodeId) { // Branch exam
+            const branchNodes = getBranchNodes(activeChapter.root, branchNodeId);
+            const branchRoot = branchNodes[0];
+            if (!branchRoot) throw new Error("Branch root not found");
+            mindMapContext = serializeMindMap(branchRoot);
+            documents = activeSubject.sourceDocuments; // Use all subject docs
+        } else if (examScope === 'subject') { // Subject exam
+            mindMapContext = chapters.map(c => `--- Chapter: ${c.name} ---\n${serializeMindMap(c.root)}`).join('\n\n');
+            documents = activeSubject.sourceDocuments;
+        } else { // Chapter exam (default)
+            mindMapContext = serializeMindMap(activeChapter.root);
+            documents = activeSubject.sourceDocuments;
+        }
+
+        const fullDocText = await Promise.all(
+            documents.filter(doc => doc.status === 'ready')
+                     .map(doc => processDocument(doc).catch(e => ''))
+        );
+        const documentsContext = fullDocText.join('\n\n');
+
+        const generatedQuestions = await generateExamQuestions(config, mindMapContext, documentsContext);
+        const questionsWithIds: Question[] = generatedQuestions.map(q => ({ ...q, id: uuidv4() }));
+        
+        const allMapNodes = chapters.flatMap(c => getAllNodes(c.root));
+        const questionToNodeIdMap = new Map<string, string>();
+        questionsWithIds.forEach(q => {
+            const relatedNode = allMapNodes.find(node => node.text.toLowerCase() === q.relatedNodeTopicText?.toLowerCase());
+            if (relatedNode) {
+                questionToNodeIdMap.set(q.id, relatedNode.id);
             }
         });
-        setGlowingNodeIds(Array.from(incorrectNodeIds));
 
-        const masteryUpdates = new Map<string, number>();
-        for (const [nodeId, perf] of nodePerformance.entries()) {
-            const node = dataActions.findNode(nodeId);
-            if (node) {
-                const currentScore = node.masteryScore || 0;
-                const examAccuracy = perf.correct / perf.total;
-                // Weighted average: 50% old score, 50% new score.
-                const newScore = (currentScore * 0.5) + (examAccuracy * 0.5);
-                masteryUpdates.set(nodeId, Math.max(0, Math.min(1, newScore)));
-            }
-        }
-
-        if (masteryUpdates.size > 0) {
-            dataActions.updateMultipleNodesMastery(masteryUpdates);
-        }
-
-        setExamState(prev => ({ ...prev, view: 'results', results }));
-
-        // Eureka Bot Trigger Logic
-        let nudge: AiNudge | null = null;
-        
-        const stagnantNodes: { id: string, score: number, text: string }[] = [];
-        for (const [nodeId, newScore] of masteryUpdates.entries()) {
-            const node = dataActions.findNode(nodeId);
-            if (node) {
-                const oldScore = node.masteryScore || 0;
-                if (newScore <= oldScore && newScore < 0.8) { // Only nudge if not mastered
-                    stagnantNodes.push({ id: nodeId, score: newScore, text: node.text });
-                }
-            }
-        }
-
-        if (stagnantNodes.length > 0) {
-            stagnantNodes.sort((a, b) => a.score - b.score);
-            const targetNode = stagnantNodes[0];
-            nudge = {
-                nodeId: targetNode.id,
-                message: `I noticed "${targetNode.text}" is still a bit tricky. How about we try a different approach to help it click?`,
-                actionLabel: 'Explain with Analogy',
-                action: () => handleGenerateAnalogy(targetNode.id),
-            };
-        } else {
-            const hintUsageByNode = new Map<string, { hints: number, total: number }>();
-            for (const question of examState.questions) {
-                const nodeId = examState.questionToNodeIdMap.get(question.id);
-                if (nodeId) {
-                    if (!hintUsageByNode.has(nodeId)) hintUsageByNode.set(nodeId, { hints: 0, total: 0 });
-                    const stats = hintUsageByNode.get(nodeId)!;
-                    stats.total++;
-                    if (revealedHints.has(question.id)) stats.hints++;
-                }
-            }
-            
-            for (const [nodeId, stats] of hintUsageByNode.entries()) {
-                if (stats.total > 0 && (stats.hints / stats.total) >= 0.75) {
-                    const node = dataActions.findNode(nodeId);
-                    if (node && (node.masteryScore || 0) < 0.9) { // Don't nudge if already mastered
-                         nudge = {
-                            nodeId: nodeId,
-                            message: `It seems the hints for "${node.text}" were useful. Would you like a detailed summary to help lock it in?`,
-                            actionLabel: 'Create Summary',
-                            action: () => handleGenerateAnalogy(nodeId), // Re-using analogy for summary/definition
-                        };
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (nudge) {
-            setAiNudge(nudge);
-            setSelectedNodeIds(new Set([nudge.nodeId]));
-            setIsAiAssistantOpen(true);
-        }
-
-    } catch(error) {
-        console.error("Failed to grade exam:", error);
-        alert(`Error: ${(error as Error).message}`);
-        setExamState(prev => ({ ...prev, view: 'active' }));
+        setExamState({
+            view: 'active',
+            config,
+            questions: questionsWithIds,
+            results: null,
+            questionToNodeIdMap
+        });
+    } catch (error) {
+        console.error("Error starting exam:", error);
+        alert(`Failed to generate exam: ${(error as Error).message}`);
+        setExamState({ view: 'closed', config: null, questions: [], results: null, questionToNodeIdMap: new Map() });
+    } finally {
+        setIsExamScopeModalOpen(false);
+        setBranchExamConfig(null);
     }
-  }, [examState.questions, examState.questionToNodeIdMap, dataActions, handleGenerateAnalogy]);
-  
-  const handleCloseExamModal = useCallback(() => {
-    setExamState({ view: 'closed', config: null, questions: [], results: null, questionToNodeIdMap: new Map() });
-    // Keep glowingNodeIds so they are visible after closing the modal.
-  }, []);
+  }, [activeSubject, activeChapter, chapters, examScope]);
 
+  const handleOpenExamConfig = (scope: 'chapter' | 'subject') => {
+      setExamScope(scope);
+      setIsExamScopeModalOpen(false);
+      setExamState(prev => ({ ...prev, view: 'config' }));
+  };
+  
+  const handleTestBranch = (nodeId: string) => {
+      const node = dataActions.findNode(nodeId);
+      if (!node) return;
+      setBranchExamConfig({ nodeId, nodeText: node.text });
+      setExamState(prev => ({...prev, view: 'config'}));
+  };
+
+  const handleSubmitExam = useCallback(async (answers: Map<string, string>, revealedHints: Set<string>) => {
+      if (examState.questions.length === 0) return;
+      setExamState(prev => ({ ...prev, view: 'loading' }));
+      try {
+          const results = await gradeAndAnalyzeExam(examState.questions, answers);
+          setExamState(prev => ({ ...prev, view: 'results', results }));
+          
+          // Update Mastery Scores
+          const newMasteryScores = new Map<string, number>();
+          results.analysis.forEach(res => {
+              const question = examState.questions.find(q => q.questionText === res.questionText);
+              if (question) {
+                  const nodeId = examState.questionToNodeIdMap.get(question.id);
+                  if (nodeId) {
+                      const parentNode = findParentNodeFromHook(nodeId);
+                      const currentScore = dataActions.findNode(nodeId)?.masteryScore || 0;
+                      const hasHint = revealedHints.has(question.id);
+                      let scoreChange = res.isCorrect ? (hasHint ? 0.05 : 0.1) : (hasHint ? -0.15 : -0.1);
+
+                      // Smaller impact for root's direct children
+                      if(parentNode && activeChapter && parentNode.id === activeChapter.root.id) {
+                          scoreChange *= 0.75;
+                      }
+
+                      const newScore = Math.max(0, Math.min(1, currentScore + scoreChange));
+                      newMasteryScores.set(nodeId, newScore);
+                  }
+              }
+          });
+          dataActions.updateMultipleNodesMastery(newMasteryScores);
+          
+          const incorrectNodes = results.analysis
+            .filter(a => !a.isCorrect)
+            .map(a => {
+                const q = examState.questions.find(q => q.questionText === a.questionText);
+                return q ? examState.questionToNodeIdMap.get(q.id) : undefined;
+            })
+            .filter((id): id is string => !!id);
+          
+          const highSeverityIds = new Set(incorrectNodes);
+          const newGlowingNodes = Array.from(highSeverityIds).map(nodeId => ({ nodeId, severity: 'high' as const }));
+          setGlowingNodes(newGlowingNodes);
+
+          if (newGlowingNodes.length > 0) {
+              setShowGuidedReviewNudge(true);
+          }
+          setLastCompletedExam({ ...examState, results });
+
+      } catch(error) {
+          console.error("Error submitting exam:", error);
+          alert(`Failed to grade exam: ${(error as Error).message}`);
+          setExamState(prev => ({ ...prev, view: 'active' })); // Revert to active exam
+      }
+  }, [examState, dataActions, findParentNodeFromHook, activeChapter]);
+  
+  const handleCloseExam = useCallback(() => {
+    setExamState({ view: 'closed', config: null, questions: [], results: null, questionToNodeIdMap: new Map() });
+    setBranchExamConfig(null);
+  }, []);
+  
+  // --- Study Sprint Handlers ---
   const handleStartStudySprint = useCallback(async (duration: number) => {
-    if (!activeDocument) return;
+    if (!activeChapter || !activeSubject) return;
     setStudySprintState({ view: 'loading', sprint: null, isLoading: true });
     
     try {
-      const allNodes = getAllNodes(activeDocument.root);
-      const weakestNodes = allNodes
-        .filter(n => n.id !== activeDocument.root.id)
-        .sort((a, b) => (a.masteryScore || 0) - (b.masteryScore || 0))
-        .slice(0, 5)
-        .map(n => `"${n.text}" (Mastery: ${Math.round((n.masteryScore || 0) * 100)}%)`);
+        const allNodes = chapters.flatMap(c => getAllNodes(c.root));
+        const weakestTopics = allNodes
+            .filter(n => n.masteryScore < 0.5)
+            .sort((a,b) => a.masteryScore - b.masteryScore)
+            .slice(0, 5) // Top 5 weakest
+            .map(n => n.text);
+        
+        const mindMapContext = chapters.map(c => `--- Chapter: ${c.name} ---\n${serializeMindMap(c.root)}`).join('\n\n');
+        
+        const fullDocText = await Promise.all(
+            activeSubject.sourceDocuments
+                .filter(doc => doc.status === 'ready')
+                .map(doc => processDocument(doc).catch(e => ''))
+        );
+        const documentsContext = fullDocText.join('\n\n');
 
-      const mindMapContext = serializeMindMapForAI(activeDocument.root);
-      const documentsContext = await getDocumentContext();
+        const sprint = await generateStudySprint(duration, weakestTopics, mindMapContext, documentsContext);
+        setStudySprintState({ view: 'active', sprint, isLoading: false });
 
-      const sprint = await generateStudySprint(duration, weakestNodes, mindMapContext, documentsContext);
-
-      setStudySprintState({
-        view: 'active',
-        sprint,
-        isLoading: false
-      });
-
-    } catch (error) {
-      console.error("Failed to generate study sprint:", error);
-      alert(`Error generating study sprint: ${(error as Error).message}`);
-      setStudySprintState({ view: 'config', sprint: null, isLoading: false });
+    } catch(error) {
+        console.error("Error generating study sprint:", error);
+        alert(`Failed to generate study sprint: ${(error as Error).message}`);
+        setStudySprintState({ view: 'closed', sprint: null, isLoading: false });
     }
-  }, [activeDocument]);
+  }, [activeSubject, chapters]);
 
-  const handleCloseStudySprintModal = useCallback(() => {
-    setStudySprintState({ view: 'closed', sprint: null, isLoading: false });
+  // --- Search Handlers ---
+  const handleSearch = useCallback(() => {
+    if (!searchQuery) {
+        setSearchResults([]);
+        return;
+    }
+    const nodesToSearch = searchScope === 'subject' 
+        ? chapters.flatMap(c => getAllNodes(c.root).map(node => ({ ...node, chapterId: c.id, chapterName: c.name })))
+        : activeChapter ? getAllNodes(activeChapter.root).map(node => ({...node, chapterId: activeChapter.id, chapterName: activeChapter.name})) : [];
+    
+    const results = nodesToSearch
+        .filter(node => node.text.toLowerCase().includes(searchQuery.toLowerCase()))
+        .map(node => ({
+            nodeId: node.id,
+            chapterId: (node as any).chapterId,
+            chapterName: (node as any).chapterName,
+            nodeText: node.text
+        }));
+
+    setSearchResults(results);
+    setCurrentSearchResultIndex(0);
+  }, [searchQuery, searchScope, chapters, activeChapter]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => handleSearch(), 300);
+    return () => clearTimeout(handler);
+  }, [handleSearch]);
+
+  useEffect(() => {
+    if (searchResults.length > 0) {
+        const currentResult = searchResults[currentSearchResultIndex];
+        if (currentResult.chapterId !== activeChapter?.id) {
+            switchActiveChapter(currentResult.chapterId);
+            setNodeToCenterAfterChapterSwitch(currentResult.nodeId);
+        } else {
+            setNodeToCenterOn(currentResult.nodeId);
+        }
+    } else {
+        setNodeToCenterOn(null);
+    }
+  }, [searchResults, currentSearchResultIndex, activeChapter?.id, switchActiveChapter]);
+
+  // Effect to handle centering after a chapter switch from search
+  useEffect(() => {
+    if (nodeToCenterAfterChapterSwitch && activeChapter?.id) {
+        // Find the result that matches the node to center
+        const result = searchResults.find(r => r.nodeId === nodeToCenterAfterChapterSwitch);
+        if (result && result.chapterId === activeChapter.id) {
+            setNodeToCenterOn(nodeToCenterAfterChapterSwitch);
+            setNodeToCenterAfterChapterSwitch(null); // Clear the trigger
+        }
+    }
+  }, [activeChapter?.id, nodeToCenterAfterChapterSwitch, searchResults]);
+  
+  // Guided Review Handlers
+  const handleStartGuidedReview = useCallback(() => {
+    if (glowingNodes.length > 0) {
+        const sortedPath = [...glowingNodes].sort((a, b) => (b.severity === 'high' ? 1 : -1) - (a.severity === 'high' ? 1 : -1));
+        setGuidedReviewPath(sortedPath);
+        setGuidedReviewIndex(0);
+        setIsInGuidedReview(true);
+        setActiveHotspotNodeId(sortedPath[0].nodeId);
+        setShowGuidedReviewNudge(false);
+    }
+  }, [glowingNodes]);
+
+  const handleAdvanceGuidedReview = useCallback(() => {
+    if (guidedReviewIndex < guidedReviewPath.length - 1) {
+        const nextIndex = guidedReviewIndex + 1;
+        setGuidedReviewIndex(nextIndex);
+        setActiveHotspotNodeId(guidedReviewPath[nextIndex].nodeId);
+    } else {
+        // End of review
+        setIsInGuidedReview(false);
+        setActiveHotspotNodeId(null);
+        setGlowingNodes([]); // Clear highlights after review
+    }
+  }, [guidedReviewIndex, guidedReviewPath]);
+
+  // Hotspot Handlers
+  const activeHotspotNodeData = useMemo(() => {
+    if (!activeHotspotNodeId || !lastCompletedExam || !lastCompletedExam.results) return null;
+    const node = dataActions.findNode(activeHotspotNodeId);
+    if (!node) return null;
+    
+    const incorrectQuestions = lastCompletedExam.results.analysis.filter(res => {
+        if (res.isCorrect) return false;
+        const question = lastCompletedExam.questions.find(q => q.questionText === res.questionText);
+        return question && lastCompletedExam.questionToNodeIdMap.get(question.id) === activeHotspotNodeId;
+    });
+
+    return {
+        node,
+        incorrectQuestions,
+        content: hotspotContent,
+    };
+  }, [activeHotspotNodeId, lastCompletedExam, dataActions, hotspotContent]);
+
+  const handleMarkNodeAsReviewed = useCallback((nodeId: string) => {
+    setGlowingNodes(prev => prev.filter(n => n.nodeId !== nodeId));
+    setActiveHotspotNodeId(null);
   }, []);
 
+  const handleHotspotExplain = useCallback(async (nodeText: string) => {
+      setHotspotContent({ view: 'loading' });
+      try {
+          const explanation = await explainConceptDifferently(nodeText);
+          setHotspotContent({ view: 'explaining', explanation });
+      } catch (error) {
+          console.error(error);
+          alert(`Failed to get explanation: ${(error as Error).message}`);
+          setHotspotContent({ view: 'main' });
+      }
+  }, []);
 
-  if (authLoading) return <Spinner />;
-  if (!currentUser) return <LandingPage />;
+  const handleHotspotQuiz = useCallback(async (nodeText: string) => {
+      setHotspotContent({ view: 'loading' });
+      try {
+          const quiz = await generateSingleQuestion(nodeText);
+          setHotspotContent({ view: 'quizzing', quiz: {...quiz, id: 'hotspot-quiz'} });
+      } catch (error) {
+          console.error(error);
+          alert(`Failed to get quiz: ${(error as Error).message}`);
+          setHotspotContent({ view: 'main' });
+      }
+  }, []);
+  
+  useEffect(() => {
+    if(activeHotspotNodeId) {
+        setHotspotContent({ view: 'main' }); // Reset content when hotspot changes
+    } else {
+        setHotspotContent(null);
+    }
+  }, [activeHotspotNodeId]);
+
+  const handleSendFeedback = useCallback(async (category: FeedbackCategory, summary: string, description: string, screenshotBlob: Blob | null) => {
+    if(!currentUser) throw new Error("User not authenticated.");
+    const feedbackId = uuidv4();
+    let screenshotUrl: string | undefined;
+    let storagePath: string | undefined;
+
+    if (screenshotBlob) {
+        storagePath = `feedback/${feedbackId}/${uuidv4()}.png`;
+        const screenshotRef = storage.ref(storagePath);
+        const snapshot = await screenshotRef.put(screenshotBlob);
+        screenshotUrl = await snapshot.ref.getDownloadURL();
+    }
+    
+    const feedbackData = {
+        id: feedbackId,
+        userId: currentUser.uid,
+        category, summary, description, screenshotUrl, storagePath,
+        timestamp: new Date().toISOString(),
+        clientInfo: {
+            userAgent: navigator.userAgent,
+            platform: navigator.platform,
+            screenWidth: window.screen.width,
+            screenHeight: window.screen.height,
+        },
+        status: 'new' as const,
+    };
+    await db.collection('feedback').doc(feedbackId).set(feedbackData);
+  }, [currentUser]);
+
+  // --- RENDER LOGIC ---
+
+  if (authLoading || (currentUser && dataLoading)) {
+    return <Spinner fullScreen={true} />;
+  }
+  
+  if (!currentUser) {
+    if (authView === 'landing') {
+        return <LandingPage onGoToLogin={() => setAuthView('login')} />;
+    }
+    return <Auth onGoToLanding={() => setAuthView('landing')} />;
+  }
+
+  if (SUPER_ADMIN_UID && currentUser.uid === SUPER_ADMIN_UID) {
+      return (
+          <Suspense fallback={<Spinner fullScreen />}>
+              <AdminPanel user={currentUser} theme={theme} onToggleTheme={handleToggleTheme} />
+          </Suspense>
+      );
+  }
 
   return (
-    <div className="w-screen h-screen overflow-hidden flex flex-col bg-white text-slate-800 dark:bg-slate-900 dark:text-slate-100">
+    <div className="w-screen h-screen flex flex-col overflow-hidden">
+      <Suspense>
+        {isWelcomeModalOpen && <WelcomeModal onStart={handleStartTutorial} />}
+      </Suspense>
       <SubjectTabs
-        documents={documents}
-        activeDocumentId={activeDocument?.id ?? null}
+        documents={subjects}
+        activeDocumentId={activeSubject?.id || null}
         user={currentUser}
-        onSwitch={switchActiveDocument}
-        onAdd={addDocument}
-        onDelete={deleteDocument}
-        onRename={updateDocumentName}
+        editingSubjectId={editingSubjectId}
+        onSwitch={switchActiveSubject}
+        onAdd={addSubject}
+        onDelete={deleteSubject}
+        onRename={updateSubjectName}
+        onStartEdit={(id) => setEditingSubjectId(id)}
+        onEndEdit={() => setEditingSubjectId(null)}
+        onRestartTutorial={restartTutorial}
       />
-      <main className="flex-1 flex flex-col relative">
-        <div className="flex-1 relative dotted-background">
-          {dataLoading ? <MindMapShell /> : activeDocument ? (
-            <>
-              <AnimatePresence>
-                  {selectedNodeIds.size > 1 && (
-                      <MultiNodeToolbar
-                          count={selectedNodeIds.size}
-                          onDelete={() => handleDeleteSelectedNodes(selectedNodeIds)}
-                          onSetColor={(color) => handleSetMultipleNodesColor(selectedNodeIds, color)}
-                      />
-                  )}
-              </AnimatePresence>
-              <Toolbar
+      
+      {activeSubject && chapters.length >= 1 && (
+        <ChapterSidebar
+            chapters={chapters}
+            activeChapterId={activeChapter?.id || null}
+            onSwitchChapter={switchActiveChapter}
+            onAddChapter={addChapter}
+            onDeleteChapter={deleteChapter}
+            onRenameChapter={renameChapter}
+        />
+      )}
+
+      <main className="flex-1 min-h-0 relative">
+        {activeChapter ? (
+          <MindMap
+            ref={mindMapRef}
+            root={activeChapter.root}
+            links={activeChapter.links}
+            toolMode={toolMode}
+            isReviewModeActive={isReviewModeActive}
+            selectedNodeIds={selectedNodeIds}
+            focusedNodeId={focusedNodeId}
+            nodeToEditOnRender={nodeToEditOnRender}
+            generatingIdeasForNodeId={generatingIdeasForNodeId}
+            rephrasingNodeId={rephrasingNodeId}
+            extractingConceptsNodeId={extractingConceptsNodeId}
+            generatingAnalogyNodeId={generatingAnalogyNodeId}
+            identifyingLabelsNodeId={identifyingLabelsNodeId}
+            pastingImageNodeId={pastingImageNodeId}
+            glowingNodes={glowingNodes}
+            searchResultIds={searchResults.map(r => r.nodeId)}
+            currentSearchResultId={searchResults.length > 0 ? searchResults[currentSearchResultIndex]?.nodeId : null}
+            nodeToCenterOn={nodeToCenterOn}
+            activeHotspotNodeId={activeHotspotNodeId}
+            hotspotData={activeHotspotNodeData}
+            isInGuidedReview={isInGuidedReview}
+            contextMenu={contextMenu}
+            theme={theme}
+            onNodeSelect={setSelectedNodeIds}
+            onFocusNode={setFocusedNodeId}
+            onNodeUpdate={dataActions.updateNodeText}
+            onNodeDelete={dataActions.deleteNode}
+            onDeleteNodes={handleDeleteSelectedNodes}
+            onNodeMove={dataActions.moveNode}
+            onNodePositionUpdate={dataActions.updateNodePosition}
+            onUpdateNodeSize={dataActions.updateNodeSize}
+            onMultipleNodePositionsUpdate={dataActions.updateMultipleNodePositions}
+            onAddChild={(parentId) => { dataActions.addChildNode(parentId, 'New Idea'); setLastAction({ type: 'ADD_CHILD', parentId }); trackUserAction('MANUAL_ADD_CHILD'); }}
+            onInsertParentNode={(childId) => { const newId = insertNodeBetween(findParentNodeFromHook(childId)?.id || '', childId); if (newId) { setSelectedNodeIds(new Set([newId])); setNodeToEditOnRender(newId); } }}
+            onToggleCollapse={dataActions.toggleNodeCollapse}
+            onGenerateIdeas={handleGenerateIdeas}
+            onRephraseNode={handleRephraseNode}
+            onExtractConcepts={handleExtractKeyConcepts}
+            onGenerateAnalogy={handleGenerateAnalogy}
+            onIdentifyAndLabel={handleIdentifyAndLabel}
+            onTestBranch={handleTestBranch}
+            onSelectBranch={(nodeId) => { const node = dataActions.findNode(nodeId); if (node) { const ids = dataActions.getAllDescendantIds(node); setSelectedNodeIds(new Set([nodeId, ...ids])); } }}
+            onSelectChildren={(nodeId) => { const node = dataActions.findNode(nodeId); if (node && node.children) setSelectedNodeIds(new Set(node.children.map(c => c.id))); }}
+            onSelectSiblings={(nodeId) => { const parent = findParentNodeFromHook(nodeId); if (parent && parent.children) setSelectedNodeIds(new Set(parent.children.map(c => c.id))); }}
+            onSetNodeColor={dataActions.updateNodeColor}
+            onEditComplete={() => setNodeToEditOnRender(null)}
+            onAddLink={dataActions.addLink}
+            onUpdateLinkLabel={dataActions.updateLinkLabel}
+            onDeleteLink={dataActions.deleteLink}
+            onShowAttachments={() => { setIsAiAssistantOpen(true); setAiSidebarTab('attachments'); }}
+            onSetNodeImage={handleSetNodeImage}
+            onRemoveNodeImage={(nodeId) => setNodeImage(nodeId, null)}
+            onViewImage={setViewingImage}
+            onNodeDragStart={() => setSelectedNodeIdsInternal(ids => new Set(ids))}
+            getAllDescendantIds={dataActions.getAllDescendantIds}
+            onTransformChange={handleTransformChange}
+            onLayoutUpdate={persistLayoutPositions}
+            onSelectionEnd={(event) => { if (event.type === 'end' && event.sourceEvent?.type === 'mouseup' && toolMode === 'select') { setToolMode('pan'); } }}
+            onCloseHotspot={() => setActiveHotspotNodeId(null)}
+            onMarkAsReviewed={handleMarkNodeAsReviewed}
+            onHotspotExplain={handleHotspotExplain}
+            onHotspotQuiz={handleHotspotQuiz}
+            onAdvanceGuidedReview={handleAdvanceGuidedReview}
+            onHotspotBackToMain={() => setHotspotContent({ view: 'main' })}
+            onContextMenuChange={setContextMenu}
+          />
+        ) : (
+          <MindMapShell />
+        )}
+
+        {isMobile ? (
+             <MobileToolbar 
+                toolMode={toolMode}
+                onToolChange={handleToolChange}
+                onUndo={dataActions.undo}
+                onRedo={dataActions.redo}
+                canUndo={dataActions.canUndo}
+                canRedo={dataActions.canRedo}
+                masteryScore={overallMastery}
+                onStartStudySprint={() => setStudySprintState(prev => ({...prev, view: 'config'}))}
+                onStartExam={() => setIsExamScopeModalOpen(true)}
+                theme={theme}
+                onToggleTheme={handleToggleTheme}
+                onOpenAiAssistant={handleOpenAiAssistant}
+                onZoomIn={handleZoomIn}
+                onZoomOut={handleZoomOut}
+                onZoomToFit={handleZoomToFit}
+                onSendFeedback={() => setIsFeedbackModalOpen(true)}
+             />
+        ) : (
+             <Toolbar
                 onUndo={dataActions.undo}
                 onRedo={dataActions.redo}
                 canUndo={dataActions.canUndo}
@@ -1109,129 +1429,78 @@ const App: React.FC = () => {
                 onZoomOut={handleZoomOut}
                 onZoomToFit={handleZoomToFit}
                 zoomLevel={zoomTransform.k}
-                isSaving={dataLoading}
-              />
-              <MindMap
-                ref={mindMapRef}
-                key={activeDocument.id}
-                root={activeDocument.root}
-                links={activeDocument.links}
-                selectedNodeIds={selectedNodeIds}
-                focusedNodeId={focusedNodeId}
-                nodeToEditOnRender={nodeToEditOnRender}
-                generatingIdeasForNodeId={generatingIdeasForNodeId}
-                rephrasingNodeId={rephrasingNodeId}
-                extractingConceptsNodeId={extractingConceptsNodeId}
-                generatingAnalogyNodeId={generatingAnalogyNodeId}
-                glowingNodeIds={glowingNodeIds}
-                onNodeSelect={setSelectedNodeIds}
-                onFocusNode={setFocusedNodeId}
-                onNodeUpdate={dataActions.updateNodeText}
-                onNodeDelete={handleDeleteNode}
-                onDeleteNodes={handleDeleteSelectedNodes}
-                onNodeMove={dataActions.moveNode}
-                onNodePositionUpdate={dataActions.updateNodePosition}
-                onMultipleNodePositionsUpdate={dataActions.updateMultipleNodePositions}
-                onAddChild={handleAddChildAndEdit}
-                onInsertParentNode={handleInsertParentNode}
-                onToggleCollapse={dataActions.toggleNodeCollapse}
+                isSaving={false} // Placeholder
+                toolMode={toolMode}
+                onToolChange={handleToolChange}
+                selectedNodeCount={selectedNodeIds.size}
+                onDeleteSelected={() => handleDeleteSelectedNodes(selectedNodeIds)}
+                onSetSelectedColor={(color) => updateMultipleNodesColor(selectedNodeIds, color)}
+                isFindInMapOpen={isFindInMapOpen}
+                onToggleFindInMap={() => setIsFindInMapOpen(prev => !prev)}
+                searchQuery={searchQuery}
+                onSearchQueryChange={setSearchQuery}
+                searchScope={searchScope}
+                onSearchScopeChange={setSearchScope}
+                searchResults={searchResults}
+                currentSearchResultIndex={currentSearchResultIndex}
+                onNextSearchResult={() => setCurrentSearchResultIndex(i => (i + 1) % searchResults.length)}
+                onPreviousSearchResult={() => setCurrentSearchResultIndex(i => (i - 1 + searchResults.length) % searchResults.length)}
+                onCloseFindInMap={handleCloseFindInMap}
+                isReviewModeActive={isReviewModeActive}
+                onFinishReview={() => setGlowingNodes([])}
+            />
+        )}
+      </main>
+
+       <Suspense fallback={<ModalLoadingFallback />}>
+            <ImageLightbox imageUrl={viewingImage} onClose={() => setViewingImage(null)} />
+            <AiAssistant
+                isOpen={isAiAssistantOpen}
+                onOpen={handleOpenAiAssistant}
+                onClose={() => setIsAiAssistantOpen(false)}
+                isMobile={isMobile}
+                selectedNodes={selectedNodesData}
+                sourceDocuments={activeSubject?.sourceDocuments || []}
+                generatingNodesFromFileId={generatingNodesFromFileId}
                 onGenerateIdeas={handleGenerateIdeas}
                 onRephraseNode={handleRephraseNode}
-                onExtractConcepts={handleExtractConcepts}
+                onExtractConcepts={handleExtractKeyConcepts}
                 onGenerateAnalogy={handleGenerateAnalogy}
-                onSetNodeColor={handleSetNodeColor}
-                onEditComplete={() => setNodeToEditOnRender(null)}
-                onAddLink={dataActions.addLink}
-                onUpdateLinkLabel={dataActions.updateLinkLabel}
-                onDeleteLink={dataActions.deleteLink}
-                onShowAttachments={handleShowAttachments}
-                onSetNodeImage={handleSetNodeImage}
-                onRemoveNodeImage={handleRemoveNodeImage}
-                onViewImage={handleViewImage}
-                onNodeDragStart={handleNodeDrag}
-                getAllDescendantIds={dataActions.getAllDescendantIds}
-                onTransformChange={handleTransformChange}
-                onLayoutUpdate={persistLayoutPositions}
+                onIdentifyAndLabel={handleIdentifyAndLabel}
+                isGeneratingIdeas={!!generatingIdeasForNodeId}
+                isRephrasing={!!rephrasingNodeId}
+                isExtractingConcepts={!!extractingConceptsNodeId}
+                isGeneratingAnalogy={!!generatingAnalogyNodeId}
+                isIdentifyingLabels={!!identifyingLabelsNodeId}
+                chatHistory={chatHistory}
+                onChatSubmit={handleAiChatSubmit}
+                isAiReplying={isAiReplying}
+                activeTab={aiSidebarTab}
+                onTabChange={handleAiTabChange}
+                onAddAttachment={addAttachment}
+                onUpdateAttachment={updateAttachment}
+                onDeleteAttachment={deleteAttachment}
+                onUploadFile={handleFileUpload}
+                onRetryUpload={(file) => { const f = uploadingFiles.get(file.id); if(f) handleFileUpload(f) }}
+                onDeleteFile={handleDeleteFile}
+                onGenerateNodes={handleGenerateNodesFromFile}
+                aiNudge={aiNudge}
+                onNudgeDismiss={() => setAiNudge(null)}
             />
-            <SubjectMasteryDisplay
-                score={overallMastery}
-                onClick={() => setStudySprintState({ view: 'config', sprint: null, isLoading: false })}
-            />
-            <button 
-                onClick={() => setExamState(prev => ({ ...prev, view: 'config' }))}
-                className="fixed bottom-6 right-6 w-16 h-16 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-blue-600 transition-all duration-300 transform hover:scale-110 z-20"
-                title="Start an Exam"
-              >
-                <i className="fa-solid fa-graduation-cap text-2xl"></i>
-              </button>
-            <Suspense fallback={null}>
-                <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
-            </Suspense>
-            </>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <div className="text-center">
-                <h2 className="text-xl font-semibold text-slate-600">No Subjects</h2>
-                <p className="text-slate-500 mt-2">Create a new subject to get started.</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-      <Suspense fallback={null}>
-        <AiAssistant
-            isOpen={isAiAssistantOpen}
-            onOpen={() => setIsAiAssistantOpen(true)}
-            onClose={() => setIsAiAssistantOpen(false)}
-            selectedNodes={selectedNodesData}
-            sourceDocuments={activeDocument?.sourceDocuments ?? []}
-            generatingNodesFromFileId={generatingNodesFromFileId}
-            onGenerateIdeas={handleGenerateIdeas}
-            onRephraseNode={handleRephraseNode}
-            onExtractConcepts={handleExtractConcepts}
-            onGenerateAnalogy={handleGenerateAnalogy}
-            isGeneratingIdeas={!!generatingIdeasForNodeId}
-            isRephrasing={!!rephrasingNodeId}
-            isExtractingConcepts={!!extractingConceptsNodeId}
-            isGeneratingAnalogy={!!generatingAnalogyNodeId}
-            chatHistory={chatHistory}
-            onChatSubmit={handleAiChatSubmit}
-            isAiReplying={isAiReplying}
-            activeTab={aiSidebarTab}
-            onTabChange={setAiSidebarTab}
-            onAddAttachment={handleAddAttachment}
-            onUpdateAttachment={handleUpdateAttachment}
-            onDeleteAttachment={handleDeleteAttachment}
-            onUploadFile={handleUploadFile}
-            onRetryUpload={handleRetryUpload}
-            onDeleteFile={handleDeleteFile}
-            onGenerateNodes={handleGenerateNodesFromDoc}
-            aiNudge={aiNudge}
-            onNudgeDismiss={() => setAiNudge(null)}
-          />
-      </Suspense>
-      <Suspense fallback={null}>
-        <ImageLightbox imageUrl={viewingImage} onClose={handleCloseImageView} />
-      </Suspense>
-       {examState.view !== 'closed' && (
-        <Suspense fallback={<ModalLoadingFallback />}>
-            <ExamModal 
-              state={examState}
-              onStart={handleStartExam}
-              onSubmit={handleSubmitExam}
-              onClose={handleCloseExamModal}
-            />
+            <ExamModal state={examState} branchExamConfig={branchExamConfig} onStart={(config) => handleStartExam(config, branchExamConfig?.nodeId)} onSubmit={handleSubmitExam} onClose={handleCloseExam} />
+            <StudySprintModal state={studySprintState} onStart={handleStartStudySprint} onClose={() => setStudySprintState({ view: 'closed', sprint: null, isLoading: false })} />
+            <ExamScopeModal isOpen={isExamScopeModalOpen} onClose={() => setIsExamScopeModalOpen(false)} onSelectScope={handleOpenExamConfig} />
+            <FeedbackModal isOpen={isFeedbackModalOpen} onClose={() => setIsFeedbackModalOpen(false)} onSubmit={handleSendFeedback} />
+       </Suspense>
+       {!isMobile && (
+        <Suspense>
+            <ThemeToggle theme={theme} onToggle={handleToggleTheme} />
+            {showGuidedReviewNudge && <GuidedReviewNudge onStart={handleStartGuidedReview} onDismiss={dismissGuidedReviewNudge} />}
+            {tutorialStep && currentTutorial && <TutorialNudge {...currentTutorial} onNext={() => advanceTutorial(tutorialStep)} onSkip={handleSkipTutorial} isLastStep={isLastTutorialStep} />}
+            <FeedbackButton onClick={() => setIsFeedbackModalOpen(true)} />
+            {showTouchSelectTip && <TouchSelectTip onDismiss={dismissTouchSelectTip} />}
         </Suspense>
        )}
-      {studySprintState.view !== 'closed' && (
-        <Suspense fallback={<ModalLoadingFallback />}>
-            <StudySprintModal
-              state={studySprintState}
-              onStart={handleStartStudySprint}
-              onClose={handleCloseStudySprintModal}
-            />
-        </Suspense>
-      )}
     </div>
   );
 };

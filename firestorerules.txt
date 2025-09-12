@@ -2,11 +2,37 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Mind map documents can be read, updated, or deleted only by their owner.
+    
+    // Wildcard match for admin: Admin can read/write ANY document in the database.
+    // This rule is checked first. If the user is the admin, they get full access and other rules are ignored.
+    match /{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == 'fYCpcIideMYs09ZkgZm31cGzQks1';
+    }
+
     match /documents/{docId} {
+      // For non-admin users:
+      // This single 'read' rule covers both 'get' (single doc) and 'list' (collection query) operations.
+      // For a 'list' operation to be allowed, the client query *must* include a filter
+      // (e.g., where("ownerId", "==", request.auth.uid)) that ensures every possible returned
+      // document would pass this rule.
       allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
-      // Anyone authenticated can create a new document, as long as they set themselves as the owner.
+      
+      // A user must set themselves as owner on create.
       allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+
+      // Rules for the 'chapters' sub-collection
+      match /chapters/{chapterId} {
+        // Users can only read/write chapters they own. ownerId is denormalized onto the chapter.
+        allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+        // The ownerId on a new chapter must match the user creating it.
+        allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+      }
+    }
+
+    match /feedback/{feedbackId} {
+      // NOTE: Admin access to feedback is covered by the wildcard rule at the top.
+      // Any authenticated user can create feedback.
+      allow create: if request.auth != null;
     }
   }
 }

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
 import { PALETTE_COLORS } from '../constants';
 
-const ToolbarButton = ({ icon, active = false, loading = false, onClick, title, disabled = false }: { icon: string; active?: boolean; loading?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; title: string; disabled?: boolean; }) => {
+const ToolbarButton = ({ icon, active = false, loading = false, onClick, title, disabled = false, 'data-tutorial-id': dataTutorialId }: { icon: string; active?: boolean; loading?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; title: string; disabled?: boolean; 'data-tutorial-id'?: string; }) => {
     const baseClasses = 'w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-sm disabled:cursor-not-allowed disabled:opacity-50';
     const activeClasses = active ? 'bg-blue-500 text-white' : 'bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-600';
     return (
@@ -12,6 +12,7 @@ const ToolbarButton = ({ icon, active = false, loading = false, onClick, title, 
             className={`${baseClasses} ${activeClasses}`}
             aria-label={title}
             title={title}
+            data-tutorial-id={dataTutorialId}
         >
             {loading ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className={`fa-solid ${icon}`}></i>}
         </button>
@@ -38,13 +39,20 @@ interface NodeToolbarProps {
     onRephraseNode: () => void;
     onExtractConcepts: () => void;
     onGenerateAnalogy: () => void;
+    onIdentifyAndLabel: () => void;
     onSetColor: (color: string) => void;
     onFocusNode: () => void;
+    onTestBranch: () => void;
+    onSelectBranch: () => void;
+    onSelectChildren: () => void;
+    onSelectSiblings: () => void;
     isGeneratingIdeas: boolean;
     isRephrasing: boolean;
     isExtractingConcepts: boolean;
     isGeneratingAnalogy: boolean;
+    isIdentifyingLabels: boolean;
     hasChildren: boolean;
+    hasImage: boolean;
     isRoot: boolean;
 }
 
@@ -55,8 +63,9 @@ const dropdownVariants: Variants = {
 
 const NodeToolbar: React.FC<NodeToolbarProps> = (props) => {
     const {
-        onAdd, onInsertParent, onDelete, onGenerateIdeas, onRephraseNode, onExtractConcepts, onGenerateAnalogy, onSetColor, onFocusNode,
-        isGeneratingIdeas, isRephrasing, isExtractingConcepts, isGeneratingAnalogy, hasChildren, isRoot
+        onAdd, onInsertParent, onDelete, onGenerateIdeas, onRephraseNode, onExtractConcepts, onGenerateAnalogy, onIdentifyAndLabel, onSetColor, onFocusNode, onTestBranch,
+        onSelectBranch, onSelectChildren, onSelectSiblings,
+        isGeneratingIdeas, isRephrasing, isExtractingConcepts, isGeneratingAnalogy, isIdentifyingLabels, hasChildren, hasImage, isRoot
     } = props;
   const [openMenu, setOpenMenu] = useState<string | null>(null);
 
@@ -68,14 +77,34 @@ const NodeToolbar: React.FC<NodeToolbarProps> = (props) => {
   return (
     <div className="flex justify-center items-center">
         <div className="bg-white dark:bg-slate-800 rounded-full p-1 flex items-center gap-1 shadow-md border border-slate-200 dark:border-slate-700">
-            <ToolbarButton icon="fa-plus" onClick={onAdd} title="Add child node" />
+            <ToolbarButton icon="fa-plus" onClick={onAdd} title="Add child node" data-tutorial-id="add-child-node" />
             <ToolbarButton icon="fa-diagram-predecessor" onClick={onInsertParent} title="Insert parent node" disabled={isRoot} />
             <ToolbarButton icon="fa-crosshairs" onClick={onFocusNode} title="Focus on this branch" disabled={isRoot} />
+            <ToolbarButton icon="fa-vial-circle-check" onClick={onTestBranch} title="Test this Branch" disabled={isRoot} />
 
+            {/* Advanced Selection Menu */}
+            <div className="relative" onMouseEnter={() => setOpenMenu('select')} onMouseLeave={() => setOpenMenu(null)}>
+                <ToolbarButton icon="fa-object-group" title="Advanced Selection" active={openMenu === 'select'} />
+                <AnimatePresence>
+                {openMenu === 'select' && (
+                    <motion.div
+                        initial="hidden"
+                        animate="visible"
+                        exit="hidden"
+                        variants={dropdownVariants}
+                        className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 bg-white dark:bg-slate-900 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 p-2 z-10"
+                    >
+                       <DropdownMenuItem text="Select Branch" icon="fa-object-group" onClick={onSelectBranch} />
+                       <DropdownMenuItem text="Select Children" icon="fa-children" onClick={onSelectChildren} disabled={!hasChildren} />
+                       <DropdownMenuItem text="Select Siblings" icon="fa-users-line" onClick={onSelectSiblings} disabled={isRoot} />
+                    </motion.div>
+                )}
+                </AnimatePresence>
+            </div>
 
             {/* AI Assist Menu */}
             <div className="relative" onMouseEnter={() => setOpenMenu('ai')} onMouseLeave={() => setOpenMenu(null)}>
-                <ToolbarButton icon="fa-wand-magic-sparkles" title="AI Assist" active={openMenu === 'ai'} />
+                <ToolbarButton icon="fa-wand-magic-sparkles" title="AI Assist" active={openMenu === 'ai'} data-tutorial-id="ai-assist-button" />
                 <AnimatePresence>
                 {openMenu === 'ai' && (
                     <motion.div
@@ -86,6 +115,7 @@ const NodeToolbar: React.FC<NodeToolbarProps> = (props) => {
                         className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 bg-white dark:bg-slate-900 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 p-2 z-10"
                     >
                        <DropdownMenuItem text="Generate Ideas" icon="fa-lightbulb" onClick={onGenerateIdeas} loading={isGeneratingIdeas} />
+                       <DropdownMenuItem text="Identify & Label" icon="fa-tags" onClick={onIdentifyAndLabel} loading={isIdentifyingLabels} disabled={!hasImage} />
                        <DropdownMenuItem text="Explain with Analogy" icon="fa-child-reaching" onClick={onGenerateAnalogy} loading={isGeneratingAnalogy} disabled={isRoot} />
                        <DropdownMenuItem text="Rephrase Node" icon="fa-pen-nib" onClick={onRephraseNode} loading={isRephrasing} disabled={isRoot} />
                        <DropdownMenuItem text="Extract Key Concepts" icon="fa-key" onClick={onExtractConcepts} loading={isExtractingConcepts} disabled={!hasChildren} />
@@ -126,8 +156,6 @@ const NodeToolbar: React.FC<NodeToolbarProps> = (props) => {
             </div>
 
             <ToolbarButton icon="fa-trash-can" onClick={handleDeleteClick} title="Delete node" disabled={isRoot} />
-            <div className="w-px h-5 bg-slate-200 dark:bg-slate-600 mx-1"></div>
-            <ToolbarButton icon="fa-sitemap" active={false} title="Layouts (Coming Soon)" disabled={true} />
         </div>
     </div>
   );

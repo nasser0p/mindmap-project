@@ -21,8 +21,19 @@ const linkGenerator = linkHorizontal<any, LinkNode>()
   .y(d => d.y);
 
 const Link: React.FC<LinkProps> = ({ link }) => {
+  // Robustness Fix: Ensure all coordinates are valid numbers before rendering.
+  // This prevents crashes in Safari due to race conditions where positions might be temporarily undefined.
+  if (link.source?.x == null || link.source?.y == null || link.target?.x == null || link.target?.y == null) {
+    return null;
+  }
+
   const pathData = linkGenerator(link);
-  if (!pathData) return null;
+  
+  // Additional check: d3-shape can produce "NaN" in the path string if given invalid input.
+  // Safari will error on this, so we prevent rendering the path if it's malformed.
+  if (!pathData || pathData.includes("NaN")) {
+    return null;
+  }
 
   return (
     <g>

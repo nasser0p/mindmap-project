@@ -29,14 +29,18 @@ export interface MindMapNode {
   image?: {
     downloadURL: string;
     storagePath: string;
+    mimeType: string;
   };
   children?: MindMapNode[];
   color: string;
   x?: number;
   y?: number;
   isCollapsed?: boolean;
+  width?: number;
+  height?: number;
   attachments?: Attachment[];
   masteryScore: number; // 0 to 1, where 1 is 100% mastery
+  type?: 'CATEGORY' | 'GATE_TYPE' | 'CONCEPT' | 'EXPRESSION' | 'TRUTH_TABLE' | 'EXAMPLE';
 }
 
 export interface LearningProfile {
@@ -54,16 +58,31 @@ export interface AiNudge {
   nodeId: string; // The node the nudge is for
 }
 
-export interface MindMapDocument {
+// Represents a Chapter, which contains the actual mind map data
+export interface Chapter {
   id: string;
   name: string;
   ownerId: string;
   root: MindMapNode;
   links: MindMapLink[];
+  order: number;
+  createdAt: string;
+}
+
+// Represents a Subject (the top-level document), which is a container for chapters.
+export interface MindMapDocument {
+  id: string;
+  name: string;
+  ownerId: string;
   sourceDocuments: SourceDocumentFile[];
   learningProfile: LearningProfile;
   createdAt: string;
+  color?: string;
+  // DEPRECATED: These will be migrated to the first chapter.
+  root?: MindMapNode; 
+  links?: MindMapLink[];
 }
+
 
 export type ChatMessage = {
   role: 'user' | 'model';
@@ -72,6 +91,7 @@ export type ChatMessage = {
 
 export interface MindMapNodeData extends Omit<MindMapNode, 'id' | 'color' | 'children' | 'masteryScore'> {
   children?: MindMapNodeData[];
+  type?: 'CATEGORY' | 'GATE_TYPE' | 'CONCEPT' | 'EXPRESSION' | 'TRUTH_TABLE' | 'EXAMPLE';
 }
 
 // Exam Feature Types
@@ -106,6 +126,11 @@ export interface ExamResult {
     analysis: GradedAnswer[];
 }
 
+export interface GlowNode {
+  nodeId: string;
+  severity: 'high' | 'low';
+}
+
 // Study Sprint Types
 export type StudyStepType = 'FLASHCARD_REVIEW' | 'FOCUSED_DEEP_DIVE' | 'CONSOLIDATION_QUIZ';
 
@@ -119,4 +144,34 @@ export interface StudyStep {
 
 export interface StudySprint {
     steps: StudyStep[];
+}
+
+// Feedback Types
+export type FeedbackCategory = 'bug' | 'feature' | 'general';
+export type FeedbackStatus = 'new' | 'in-progress' | 'resolved' | 'archived';
+
+export interface Feedback {
+  id: string;
+  userId: string;
+  category: FeedbackCategory;
+  summary: string;
+  description: string;
+  screenshotUrl?: string;
+  storagePath?: string;
+  timestamp: string; // ISO string
+  clientInfo: {
+    userAgent: string;
+    platform: string;
+    screenWidth: number;
+    screenHeight: number;
+  };
+  status: FeedbackStatus;
+}
+
+// Search Types
+export interface SearchResult {
+  nodeId: string;
+  chapterId: string;
+  chapterName: string;
+  nodeText: string;
 }
