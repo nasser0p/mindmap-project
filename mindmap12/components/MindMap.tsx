@@ -1,0 +1,1334 @@
+// In MindMap.tsx
+
+import React, { useState, useEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle, lazy, Suspense, useLayoutEffect } from 'react';
+import { select, Selection, pointer } from 'd3-selection';
+import { zoom, zoomIdentity, ZoomTransform, ZoomBehavior, zoomTransform } from 'd3-zoom';
+import { drag, D3DragEvent } from 'd3-drag';
+import { hierarchy, tree, HierarchyNode, HierarchyPointNode, HierarchyPointLink } from 'd3-hierarchy';
+import { easeCubicOut } from 'd3-ease';
+import 'd3-transition';
+import { motion, AnimatePresence } from 'framer-motion';
+import { MindMapNode as MindMapNodeData, MindMapLink, GlowNode, GradedAnswer, Chapter } from '../types';
+import { HotspotData, HotspotContent, ContextMenuData } from '../App';
+import Node from './Node';
+import Link from './Link';
+import EditableLink from './EditableLink';
+import NodeToolbar from './NodeToolbar';
+import FocusBar from './FocusBar';
+import NodeContextMenu from './NodeContextMenu';
+import { ToolMode } from './Toolbar';
+
+const TopicHotspot = lazy(() => import('./TopicHotspot'));
+
+export interface MindMapActions {
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomToFit: () => void;
+}
+
+interface MindMapProps {
+  root: MindMapNodeData;
+  links: MindMapLink[];
+  toolMode: ToolMode;
+  isReviewModeActive: boolean;
+  selectedNodeIds: Set<string>;
+  focusedNodeId: string | null;
+  nodeToEditOnRender: string | null;
+  generatingIdeasForNodeId: string | null;
+  rephrasingNodeId: string | null;
+  extractingConceptsNodeId: string | null;
+  generatingAnalogyNodeId: string | null;
+  identifyingLabelsNodeId: string | null;
+  pastingImageNodeId: string | null;
+  glowingNodes: GlowNode[];
+  searchResultIds: string[];
+  currentSearchResultId: string | null;
+  nodeToCenterOn: string | null;
+  activeHotspotNodeId: string | null;
+  hotspotData: HotspotData;
+  isInGuidedReview: boolean;
+  contextMenu: ContextMenuData;
+  theme: 'light' | 'dark';
+  onNodeSelect: (ids: Set<string>) => void;
+  onFocusNode: (id: string | null) => void;
+  onNodeUpdate: (id:string, text: string) => void;
+  onNodeDelete: (id: string) => void;
+  onDeleteNodes: (ids: Set<string>) => void;
+  onNodeMove: (sourceId: string, targetId: string) => void;
+  onNodePositionUpdate: (id: string, x: number, y: number) => void;
+  onUpdateNodeSize: (id: string, width: number, height: number) => void;
+  onMultipleNodePositionsUpdate: (positions: Map<string, { x: number; y: number }>) => void;
+  onAddChild: (parentId: string) => void;
+  onInsertParentNode: (childId: string) => void;
+  onToggleCollapse: (nodeId: string) => void;
+  onGenerateIdeas: (nodeId: string) => void;
+  onRephraseNode: (nodeId: string) => void;
+  onExtractConcepts: (nodeId: string) => void;
+  onGenerateAnalogy: (nodeId: string) => void;
+  onIdentifyAndLabel: (nodeId: string) => void;
+  onTestBranch: (nodeId: string) => void;
+  onSelectBranch: (nodeId: string) => void;
+  onSelectChildren: (nodeId: string) => void;
+  onSelectSiblings: (nodeId: string) => void;
+  onSetNodeColor: (nodeId: string, color: string) => void;
+  onEditComplete: () => void;
+  onAddLink: (sourceId: string, targetId: string) => void;
+  onUpdateLinkLabel: (linkId: string, label: string) => void;
+  onDeleteLink: (linkId: string) => void;
+  onShowAttachments: (nodeId: string) => void;
+  onSetNodeImage: (nodeId: string, file: File) => void;
+  onRemoveNodeImage: (nodeId: string) => void;
+  onViewImage: (dataUrl: string) => void;
+  onNodeDragStart: () => void;
+  getAllDescendantIds: (node: MindMapNodeData) => string[];
+  onTransformChange: (transform: ZoomTransform) => void;
+  onLayoutUpdate: (positions: Map<string, { x: number; y: number }>) => void;
+  onSelectionEnd: (event: any) => void;
+  onCloseHotspot: () => void;
+  onMarkAsReviewed: (nodeId: string) => void;
+  onHotspotExplain: (nodeText: string) => void;
+  onHotspotQuiz: (nodeText: string) => void;
+  onAdvanceGuidedReview: () => void;
+  onHotspotBackToMain: () => void;
+  onContextMenuChange: (menu: ContextMenuData) => void;
+}
+
+const minNodeHeight = 52;
+const nodeWidth = 220;
+const CLICK_DRAG_THRESHOLD = 5; // pixels
+const TOOLBAR_WIDTH = 392; // Increased width for the new selection button
+const TOOLBAR_HEIGHT = 40;
+const TOOLBAR_Y_OFFSET = 15;
+const HOTSPOT_WIDTH = 360;
+const HOTSPOT_HEIGHT = 420;
+const HOTSPOT_X_OFFSET = 16;
+const LONG_PRESS_DURATION = 400; // ms
+const TOUCH_MOVE_THRESHOLD = 10; // pixels
+
+
+// Helper functions for tree traversal
+const findNodeById = (root: MindMapNodeData, nodeId: string): MindMapNodeData | null => {
+  if (root.id === nodeId) return root;
+  if (root.children) {
+    for (const child of root.children) {
+      const found = findNodeById(child, nodeId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+const findNodePathObjects = (root: MindMapNodeData, nodeId: string): MindMapNodeData[] => {
+    function find(currentPath: MindMapNodeData[], node: MindMapNodeData): MindMapNodeData[] | null {
+        const newPath = [...currentPath, node];
+        if (node.id === nodeId) {
+            return newPath;
+        }
+        if (node.children) {
+            for (const child of node.children) {
+                const result = find(newPath, child);
+                if (result) return result;
+            }
+        }
+        return null;
+    }
+    return find([], root) || [];
+};
+
+const getStructuralId = (node: MindMapNodeData, count: { value: number }): string => {
+  count.value++;
+  // A recursive function to create a string that represents the tree structure.
+  // It now includes node positions and color to ensure layout updates after a drag or style change.
+  let id = `${node.id}@${node.x?.toFixed(0)},${node.y?.toFixed(0)}:${node.color || 'default'}`;
+  if (node.isCollapsed) {
+    id += '[c]'; // 'c' for collapsed
+  } else if (node.children && node.children.length > 0) {
+    id += `[${node.children.map(child => getStructuralId(child, count)).join(',')}]`;
+  }
+  return id;
+};
+
+
+const MindMap = forwardRef<MindMapActions, MindMapProps>((props, ref) => {
+  const { 
+    root, 
+    links: typedLinks,
+    toolMode,
+    isReviewModeActive,
+    selectedNodeIds, 
+    focusedNodeId,
+    nodeToEditOnRender,
+    generatingIdeasForNodeId,
+    rephrasingNodeId,
+    extractingConceptsNodeId,
+    generatingAnalogyNodeId,
+    identifyingLabelsNodeId,
+    pastingImageNodeId,
+    glowingNodes,
+    searchResultIds,
+    currentSearchResultId,
+    nodeToCenterOn,
+    activeHotspotNodeId,
+    hotspotData,
+    isInGuidedReview,
+    contextMenu,
+    theme,
+    onNodeSelect, 
+    onFocusNode,
+    onNodeUpdate, 
+    onNodeDelete, 
+    onDeleteNodes,
+    onNodeMove,
+    onNodePositionUpdate: persistNodePosition,
+    onUpdateNodeSize,
+    onMultipleNodePositionsUpdate,
+    onAddChild,
+    onInsertParentNode,
+    onToggleCollapse,
+    onGenerateIdeas,
+    onRephraseNode,
+    onExtractConcepts,
+    onGenerateAnalogy,
+    onIdentifyAndLabel,
+    onTestBranch,
+    onSelectBranch,
+    onSelectChildren,
+    onSelectSiblings,
+    onSetNodeColor,
+    onEditComplete,
+    onAddLink,
+    onUpdateLinkLabel,
+    onDeleteLink,
+    onShowAttachments,
+    onSetNodeImage,
+    onRemoveNodeImage,
+    onViewImage,
+    onNodeDragStart,
+    getAllDescendantIds,
+    onTransformChange,
+    onLayoutUpdate,
+    onSelectionEnd,
+    onCloseHotspot,
+    onMarkAsReviewed,
+    onHotspotExplain,
+    onHotspotQuiz,
+    onAdvanceGuidedReview,
+    onHotspotBackToMain,
+    onContextMenuChange,
+  } = props;
+
+  const svgRef = useRef<SVGSVGElement>(null);
+  const gRef = useRef<SVGGElement>(null);
+  const nodesContainerRef = useRef<HTMLDivElement>(null);
+  const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown>>();
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [nodeSizes, setNodeSizes] = useState<Record<string, {width: number, height: number}>>({});
+  const [isInitialTransformSet, setIsInitialTransformSet] = useState(false);
+  const [drawingLinkState, setDrawingLinkState] = useState<{ sourceId: string; endPos: { x: number; y: number; } } | null>(null);
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
+  const [nodePositions, setNodePositions] = useState<Map<string, { x: number; y: number }>>(new Map());
+  const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; width: number; height: number; } | null>(null);
+  const [isBoxSelecting, setIsBoxSelecting] = useState(false);
+  const selectionBoxRef = useRef<{ x: number; y: number; width: number; height: number; } | null>(null);
+  
+  const [longPressFeedback, setLongPressFeedback] = useState<{ x: number; y: number } | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchStartPosRef = useRef<{ x: number, y: number } | null>(null);
+  const isAwaitingLongPressRef = useRef(false);
+
+  // Refs for smooth dragging
+  const dragAnimationRef = useRef<number | null>(null);
+  const latestDragEventRef = useRef<any>(null);
+  const dragStartOffsetsRef = useRef(new Map<string, { dx: number; dy: number }>());
+  const nodePositionsRef = useRef(nodePositions);
+  nodePositionsRef.current = nodePositions;
+
+  const selectedNodeIdsRef = useRef(selectedNodeIds);
+  useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
+
+  const dropTargetIdRef = useRef(dropTargetId);
+  dropTargetIdRef.current = dropTargetId;
+  
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+
+  // Create refs to hold latest props and state to prevent stale closures in D3 handlers
+  // and to avoid making the drag useEffect hook's dependency array unstable.
+  const dragHandlerPropsRef = useRef(props);
+  useEffect(() => {
+    dragHandlerPropsRef.current = props;
+  });
+
+  const nodeSizesRef = useRef(nodeSizes);
+  useEffect(() => {
+    nodeSizesRef.current = nodeSizes;
+  }, [nodeSizes]);
+
+  const lastSelectedNodeId = useMemo(() => {
+    if (selectedNodeIds.size === 0) return null;
+    return Array.from(selectedNodeIds).pop()!;
+  }, [selectedNodeIds]);
+
+  const handleNodeSizeChange = useCallback((id: string, size: {width: number, height: number}) => {
+    setNodeSizes(prev => {
+        if (prev[id]?.width === size.width && prev[id]?.height === size.height) {
+            return prev;
+        }
+        return {...prev, [id]: size};
+    });
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    zoomIn: () => {
+        if (zoomBehaviorRef.current && svgRef.current) {
+            const svg = select(svgRef.current);
+            svg.transition().duration(250).call(zoomBehaviorRef.current.scaleBy, 1.2);
+        }
+    },
+    zoomOut: () => {
+        if (zoomBehaviorRef.current && svgRef.current) {
+            const svg = select(svgRef.current);
+            svg.transition().duration(250).call(zoomBehaviorRef.current.scaleBy, 0.8);
+        }
+    },
+    zoomToFit: () => {
+        const svgElement = svgRef.current;
+        const gElement = gRef.current;
+        const zoomBehavior = zoomBehaviorRef.current;
+        if (!svgElement || !gElement || !zoomBehavior || !dimensions.width) return;
+        
+        // Use the bounds of the link container now
+        // FIX: The getBBox method requires an options object argument. Passing an empty object resolves the error.
+        const gBounds = gElement.getBBox({});
+        if (!gBounds.width || !gBounds.height) return;
+        
+        const { width, height } = dimensions;
+        const fullWidth = gBounds.width;
+        const fullHeight = gBounds.height;
+        
+        const scale = 0.9 * Math.min(width / fullWidth, height / fullHeight);
+        const newX = width / 2 - (gBounds.x + fullWidth / 2) * scale;
+        const newY = height / 2 - (gBounds.y + fullHeight / 2) * scale;
+        
+        const newTransform = zoomIdentity.translate(newX, newY).scale(scale);
+        
+        const svg = select(svgElement);
+        zoomBehavior.transform(svg.transition().duration(400), newTransform);
+    }
+  }));
+
+  // --- Determine the root for display (full tree or focused subtree) ---
+  const displayRoot = useMemo(() => {
+    if (!focusedNodeId) {
+        return root;
+    }
+    // Deep clone is important here to not mutate the original data
+    const focusedNode = findNodeById(JSON.parse(JSON.stringify(root)), focusedNodeId);
+    return focusedNode || root;
+  }, [root, focusedNodeId]);
+
+  // --- Manual memoization for expensive D3 layout calculation ---
+  const d3RootRef = useRef<HierarchyNode<MindMapNodeData>>();
+  const structuralIdRef = useRef<string>();
+  
+  // Memoize the expensive structural ID calculation to prevent re-running it on every pan/zoom.
+  const structuralId = useMemo(() => {
+    const count = { value: 0 };
+    const structure = getStructuralId(displayRoot, count);
+    return `${structure}|count:${count.value}`;
+  }, [displayRoot]);
+  
+  const originalNodesMap = useMemo(() => {
+    const map = new Map<string, MindMapNodeData>();
+    if (!root) return map;
+    hierarchy<MindMapNodeData>(root).each(d => map.set(d.data.id, d.data));
+    return map;
+  }, [root]);
+  
+  // FIX: Add ref to hold latest originalNodesMap to avoid stale closures in drag handlers.
+  const originalNodesMapRef = useRef(originalNodesMap);
+  useEffect(() => {
+    originalNodesMapRef.current = originalNodesMap;
+  }, [originalNodesMap]);
+
+  // This block replaces the previous useMemo for d3Root.
+  // It only recalculates the layout if the tree's structure has actually changed,
+  // preventing expensive re-calculations during simple pans or zooms.
+  if (structuralId !== structuralIdRef.current) {
+    structuralIdRef.current = structuralId;
+    
+    // This deep clone is necessary to handle collapsed nodes for layout purposes
+    // without modifying the original data structure.
+    const deepCloneAndFilter = (node: MindMapNodeData): MindMapNodeData => {
+      const newNode = { ...node };
+      if (node.isCollapsed) {
+        newNode.children = []; // Prune children for layout if collapsed
+      } else if (node.children) {
+        newNode.children = node.children.map((child) => deepCloneAndFilter(child));
+      }
+      return newNode;
+    };
+    const layoutReadyRoot = deepCloneAndFilter(displayRoot);
+    
+    const hierarchyData = hierarchy<MindMapNodeData>(layoutReadyRoot);
+
+    // 1. ALWAYS run the tree layout to get baseline positions for all nodes.
+    // FIX: Remove generic from tree() call to fix potential type inference issue.
+    const treeLayout = tree().nodeSize([200, 320]);
+    // FIX: This line was also showing an error, which is resolved by the fix above.
+    treeLayout(hierarchyData);
+
+    // Before overriding positions, determine the common 'x' for groups of siblings that have been moved.
+    const siblingGroupX = new Map<string, number>(); // Key: parentId, Value: common x-coordinate
+    hierarchyData.each(node => {
+        // We only care about nodes that have children
+        if (!node.children || node.children.length === 0) return;
+
+        // Find the first child that has a user-defined position
+        const firstMovedChild = node.children.find(child => originalNodesMap.get(child.data.id)?.x !== undefined);
+
+        if (firstMovedChild) {
+            // If we found one, get its x position and store it for this parent
+            const commonX = originalNodesMap.get(firstMovedChild.data.id)!.x!;
+            siblingGroupX.set(node.data.id, commonX);
+        }
+    });
+
+    // 2. Iterate and apply overrides.
+    hierarchyData.each(d => {
+        // Swap x/y for a horizontal layout
+        const tempX = d.x;
+        d.x = d.y;
+        d.y = tempX;
+        
+        const originalNode = originalNodesMap.get(d.data.id);
+        if (originalNode) {
+            if (originalNode.x !== undefined) {
+                // Keep existing horizontal position for dragged nodes
+                d.x = originalNode.x;
+            } else if (d.parent && siblingGroupX.has(d.parent.data.id)) {
+                // This is a new node, align it with its moved siblings
+                d.x = siblingGroupX.get(d.parent.data.id)!;
+            }
+            
+            if (originalNode.y !== undefined) {
+                // Keep existing vertical position (for fully dragged nodes),
+                // otherwise use the new D3-calculated y position for reorganization.
+                d.y = originalNode.y;
+            }
+        }
+    });
+
+    d3RootRef.current = hierarchyData;
+  }
+  
+  const d3Root = d3RootRef.current!;
+
+  // This effect runs after the layout is calculated to persist new node positions.
+  // It is the fix for the infinite render loop.
+  useEffect(() => {
+    if (!d3Root) return;
+
+    const positionsToPersist = new Map<string, { x: number; y: number }>();
+    let needsUpdate = false;
+    
+    for (const d of d3Root.descendants()) {
+      // If an original node didn't have a position, it's new.
+      const originalNode = originalNodesMap.get(d.data.id);
+      if (originalNode && originalNode.x === undefined && d.x !== undefined) {
+        positionsToPersist.set(d.data.id, { x: d.x, y: d.y });
+        needsUpdate = true;
+      }
+    }
+
+    if (needsUpdate) {
+      onLayoutUpdate(positionsToPersist);
+    }
+  }, [d3Root, originalNodesMap, onLayoutUpdate]);
+
+  const nodes = useMemo(() => (d3Root ? d3Root.descendants() : []) as HierarchyPointNode<MindMapNodeData>[], [d3Root]);
+  const hierarchicalLinks = useMemo(() => (d3Root ? d3Root.links() : []) as HierarchyPointLink<MindMapNodeData>[], [d3Root]);
+  
+  useEffect(() => {
+    if (d3Root) {
+        const newPositions = new Map<string, { x: number; y: number }>();
+        // Create a map of visible nodes from the D3 layout for quick lookups
+        const layoutNodesMap = new Map(d3Root.descendants().map(n => [n.data.id, n]));
+
+        // Iterate over ALL nodes from the original data source (`root`) to ensure
+        // hidden nodes are included in our position tracking.
+        hierarchy<MindMapNodeData>(root).each(dataNode => {
+            const nodeId = dataNode.data.id;
+            const nodeData = dataNode.data;
+            const layoutNode = layoutNodesMap.get(nodeId);
+            
+            // Priority 1: Use the position from the main `root` data if it exists.
+            // This is the source of truth for nodes that have been manually moved.
+            if (nodeData.x !== undefined && nodeData.y !== undefined) {
+                newPositions.set(nodeId, { x: nodeData.x, y: nodeData.y });
+            } 
+            // Priority 2: If a node has no position yet (e.g., it's new) but is visible
+            // in the layout, use the position calculated by D3.
+            else if (layoutNode && layoutNode.x !== undefined && layoutNode.y !== undefined) {
+                 newPositions.set(nodeId, { x: layoutNode.x, y: layoutNode.y });
+            }
+        });
+
+        setNodePositions(newPositions);
+    }
+  }, [d3Root, root]);
+
+  // Create refs to hold the latest values of nodes.
+  // This allows the camera-panning effect to access up-to-date data without
+  // creating a dependency that would cause it to re-run on every drag/pan.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+
+  const selectedNodeData = useMemo(() => originalNodesMap.get(lastSelectedNodeId || '') || null, [originalNodesMap, lastSelectedNodeId]);
+  
+  // Effect for handling component resizing and setting initial transform state
+  useEffect(() => {
+    const resizeObserver = new ResizeObserver(entries => {
+      if (entries[0]) {
+        const { width, height } = entries[0].contentRect;
+        setDimensions({ width, height });
+        if (!isInitialTransformSet && d3Root) {
+            const initialTransform = zoomIdentity.translate(width / 2, height / 2);
+            setTransform(initialTransform);
+            setIsInitialTransformSet(true);
+        }
+      }
+    });
+    const parent = svgRef.current?.parentElement;
+    if (parent) resizeObserver.observe(parent);
+    return () => { if (parent) resizeObserver.unobserve(parent); };
+  }, [isInitialTransformSet, d3Root]);
+  
+  // Effect to handle D3 zoom behavior. This now runs only once.
+  useEffect(() => {
+    if (!svgRef.current || !gRef.current) return;
+    const svg = select(svgRef.current);
+
+    const zoomBehavior = zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.2, 3])
+      .filter((evt) => {
+        // Always allow wheel events for touchpad pinch-zoom and pan.
+        if (evt.type === 'wheel') {
+            return true;
+        }
+        // Allow panning only when in 'pan' mode and not on an interactive element.
+        return toolMode === 'pan' && (evt.target as Element).closest('.node-group, .editable-link-group, .node-toolbar-wrapper, .topic-hotspot-wrapper, .focus-bar, .node-context-menu') === null;
+      })
+      .on('zoom', (event) => {
+        const { transform } = event;
+        // The D3 zoom handler now ONLY updates React state.
+        // This ensures the SVG and HTML layers are updated in the same render cycle.
+        setTransform(transform);
+        onTransformChange(transform);
+      });
+
+    svg.call(zoomBehavior);
+    svg.on("dblclick.zoom", null);
+    zoomBehaviorRef.current = zoomBehavior;
+    
+    return () => { svg.on('.zoom', null); };
+  }, [isInitialTransformSet, onTransformChange, toolMode]);
+
+  // Effect for the box selection drag behavior
+  useEffect(() => {
+    if (!svgRef.current) return;
+    const svg = select(svgRef.current);
+    let startPos: { x: number; y: number } | null = null;
+
+    const selectionDrag = drag<SVGSVGElement, unknown>()
+      .filter((event) => toolMode === 'select' && event.target === svgRef.current)
+      .on('start', (event) => {
+        const isTouchEvent = event.sourceEvent instanceof TouchEvent;
+        if (isTouchEvent) {
+          isAwaitingLongPressRef.current = true;
+          const [touchX, touchY] = pointer(event.sourceEvent, svgRef.current!);
+          touchStartPosRef.current = { x: touchX, y: touchY };
+
+          longPressTimerRef.current = setTimeout(() => {
+            if (isAwaitingLongPressRef.current) { // Check if not cancelled by movement
+              if (!svgRef.current || !touchStartPosRef.current) {
+                return;
+              }
+              setIsBoxSelecting(true);
+              if (typeof navigator.vibrate === 'function') {
+                navigator.vibrate([50]);
+              }
+              // FIX: The zoomTransform function requires the node element as an argument to get its current transform.
+              const currentTransform = zoomTransform(svgRef.current!);
+              const [startX, startY] = currentTransform.invert([touchStartPosRef.current.x, touchStartPosRef.current.y]);
+              startPos = { x: startX, y: startY };
+              const newBox = { x: startPos.x, y: startPos.y, width: 0, height: 0 };
+              setSelectionBox(newBox);
+              setLongPressFeedback({x: startX, y: startY});
+              selectionBoxRef.current = newBox;
+            }
+          }, LONG_PRESS_DURATION);
+
+        } else { // Mouse event
+          setIsBoxSelecting(true);
+              // FIX: The zoomTransform function requires the node element as an argument to get its current transform.
+              const currentTransform = zoomTransform(svgRef.current!);
+          const [x, y] = pointer(event.sourceEvent, svgRef.current!);
+          const [invertedX, invertedY] = currentTransform.invert([x, y]);
+          startPos = { x: invertedX, y: invertedY };
+          const newBox = { x: startPos.x, y: startPos.y, width: 0, height: 0 };
+          setSelectionBox(newBox);
+          selectionBoxRef.current = newBox;
+        }
+      })
+      .on('drag', (event) => {
+        if (!svgRef.current) return;
+        const isTouchEvent = event.sourceEvent instanceof TouchEvent;
+
+        if (isTouchEvent) {
+          if (isAwaitingLongPressRef.current) {
+            const [currentX, currentY] = pointer(event.sourceEvent, svgRef.current!);
+            const dist = Math.sqrt(Math.pow(currentX - touchStartPosRef.current!.x, 2) + Math.pow(currentY - touchStartPosRef.current!.y, 2));
+            if (dist > TOUCH_MOVE_THRESHOLD) {
+              if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+              isAwaitingLongPressRef.current = false;
+            }
+          }
+        }
+
+        if (!isBoxSelecting || !startPos) return;
+
+        const currentTransform = zoomTransform(svgRef.current!);
+        const [screenCursorX, screenCursorY] = pointer(event.sourceEvent, svgRef.current!);
+        const [cursorX, cursorY] = currentTransform.invert([screenCursorX, screenCursorY]);
+        
+        const newWidth = cursorX - startPos.x;
+        const newHeight = cursorY - startPos.y;
+
+        const newBox = {
+            x: newWidth > 0 ? startPos.x : cursorX,
+            y: newHeight > 0 ? startPos.y : cursorY,
+            width: Math.abs(newWidth),
+            height: Math.abs(newHeight),
+        };
+        
+        setSelectionBox(newBox);
+        selectionBoxRef.current = newBox;
+      })
+      .on('end', (event) => {
+        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+        isAwaitingLongPressRef.current = false;
+        
+        if (!isBoxSelecting) {
+            setLongPressFeedback(null);
+            return;
+        }
+
+        setIsBoxSelecting(false);
+        setLongPressFeedback(null);
+        const finalSelectionBox = selectionBoxRef.current;
+
+        if (finalSelectionBox && (finalSelectionBox.width > 5 || finalSelectionBox.height > 5)) {
+            const { x, y, width, height } = finalSelectionBox;
+            const selectedIds = new Set<string>();
+
+            const currentNodes = nodesRef.current;
+            const currentPositions = nodePositionsRef.current;
+            const currentSelection = selectedNodeIdsRef.current;
+
+            currentNodes.forEach(node => {
+                const pos = currentPositions.get(node.data.id);
+                if (pos && pos.x >= x && pos.x <= x + width && pos.y >= y && pos.y <= y + height) {
+                    selectedIds.add(node.data.id);
+                }
+            });
+
+            const sourceEvent = event.sourceEvent as MouseEvent | TouchEvent;
+            if ('shiftKey' in sourceEvent && sourceEvent.shiftKey) {
+                const newSelection = new Set(currentSelection);
+                selectedIds.forEach(id => newSelection.add(id));
+                onNodeSelect(newSelection);
+            } else {
+                onNodeSelect(selectedIds);
+            }
+        }
+        
+        setSelectionBox(null);
+        selectionBoxRef.current = null;
+        startPos = null;
+        onSelectionEnd(event);
+      });
+
+    svg.call(selectionDrag);
+
+    return () => {
+      svg.on('.drag', null);
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, [toolMode, onNodeSelect, onSelectionEnd, isBoxSelecting]);
+
+  const initialCenteringDoneRef = useRef(false);
+
+  // When the document changes, reset the centering flag.
+  useEffect(() => {
+    initialCenteringDoneRef.current = false;
+  }, [root.id]);
+
+  // Effect to pan/zoom camera for focus or initial load.
+  useEffect(() => {
+    if (!dimensions.width || !svgRef.current || !zoomBehaviorRef.current || !isInitialTransformSet) return;
+
+    const svg = select(svgRef.current);
+    const zoomBehavior = zoomBehaviorRef.current;
+    
+    let targetNodeId: string | null = null;
+    
+    // Case 1: A node is focused by the user. Highest priority.
+    if (focusedNodeId) {
+        targetNodeId = focusedNodeId;
+    }
+    // Case 2: A search result needs to be centered.
+    else if (nodeToCenterOn) {
+        targetNodeId = nodeToCenterOn;
+    }
+    // Case 3: Initial load for this document. Center the root.
+    else if (!initialCenteringDoneRef.current) {
+        targetNodeId = root.id;
+        initialCenteringDoneRef.current = true;
+    }
+
+    // If there's no target, don't do anything. This prevents re-centering on resize.
+    if (!targetNodeId) return;
+    
+    const currentNodes = nodesRef.current;
+    const currentPositions = nodePositionsRef.current;
+    
+    const targetNode = currentNodes.find(n => n.data.id === targetNodeId);
+    if (!targetNode) return;
+
+    const nodePos = currentPositions.get(targetNode.data.id);
+    if (!nodePos) return; 
+    
+    const { x: targetX, y: targetY } = nodePos;
+    
+    const svgNode = svg.node();
+    if (!svgNode) return;
+    const currentTransform = zoomTransform(svgNode);
+    let k = currentTransform.k;
+    
+    // Zoom in a bit if we're focused on a search result and currently zoomed out.
+    if (nodeToCenterOn) {
+        k = Math.max(k, 1.2);
+    } else if (targetNodeId === root.id && initialCenteringDoneRef.current) {
+         // Reset zoom for initial load, but keep it for subsequent refocus on root
+    }
+
+    const newTransform = zoomIdentity
+        .translate(dimensions.width / 2 - targetX * k, dimensions.height / 2 - targetY * k)
+        .scale(k);
+    
+    (svg as any).transition('zoom').duration(400).ease(easeCubicOut).call(zoomBehavior.transform, newTransform);
+       
+  }, [focusedNodeId, nodeToCenterOn, isInitialTransformSet, dimensions, root.id]);
+
+  const isDescendant = useCallback((node: HierarchyNode<MindMapNodeData>, id: string): boolean => node.descendants().some(d => d.data.id === id), []);
+
+  // useLayoutEffect to handle drag behavior on nodes. This hook runs synchronously
+  // after DOM mutations, ensuring that node elements exist before we try to
+  // attach D3 listeners. This fixes race conditions on initial render.
+  useLayoutEffect(() => {
+    if (!nodesContainerRef.current || !d3Root || !nodes.length) return;
+    
+    // FIX: Use D3's data-binding selection to solve race conditions on initial render.
+    // By binding the `nodes` data array to the DOM elements with a key function,
+    // we ensure that the drag behavior is only applied to nodes that have been
+    // fully rendered by React.
+    const htmlNodes = select(nodesContainerRef.current)
+        .selectAll<HTMLDivElement, HierarchyPointNode<MindMapNodeData>>('div.node-group')
+        .data(nodes, d => d.data.id);
+    
+    type DragEvent = D3DragEvent<HTMLDivElement, HierarchyPointNode<MindMapNodeData>, HierarchyPointNode<MindMapNodeData>>;
+
+    const dragBehavior = drag<HTMLDivElement, HierarchyPointNode<MindMapNodeData>>()
+      .filter((event) => {
+        if (isReviewModeActive) return false;
+        
+        const target = event.target as Element;
+
+        if (target.closest('.node-resize-handle')) {
+            return false;
+        }
+
+        if (focusedNodeId && (event.subject as HierarchyPointNode<MindMapNodeData>).data.id === focusedNodeId) return false;
+        return !!target.closest('.mind-map-node-draggable-part');
+      })
+      .on('start', function (this: HTMLDivElement, event: DragEvent, d: HierarchyPointNode<MindMapNodeData>) {
+        const { onNodeDragStart, onNodeSelect, getAllDescendantIds } = dragHandlerPropsRef.current;
+        const currentOriginalNodesMap = originalNodesMapRef.current;
+        event.sourceEvent.preventDefault();
+        onNodeDragStart();
+        event.sourceEvent.stopPropagation();
+        select(this).raise();
+        
+        let baseSelection = selectedNodeIdsRef.current;
+        if (!selectedNodeIdsRef.current.has(d.data.id)) {
+            baseSelection = new Set([d.data.id]);
+            onNodeSelect(baseSelection);
+        }
+        setDraggedNodeId(d.data.id);
+
+        const allNodesToDrag = new Set(baseSelection);
+        baseSelection.forEach(nodeId => {
+            const node = currentOriginalNodesMap.get(nodeId);
+            if (node && node.isCollapsed) {
+                const descendantIds = getAllDescendantIds(node);
+                descendantIds.forEach(descId => allNodesToDrag.add(descId));
+            }
+        });
+        
+        const [worldX, worldY] = transformRef.current.invert([event.x, event.y]);
+
+        dragStartOffsetsRef.current.clear();
+        allNodesToDrag.forEach(id => {
+            const nodePos = nodePositionsRef.current.get(id);
+            if (nodePos) {
+                dragStartOffsetsRef.current.set(id, { dx: nodePos.x - worldX, dy: nodePos.y - worldY });
+            }
+        });
+      })
+      .on('drag', function (this: HTMLDivElement, event: DragEvent, d: HierarchyPointNode<MindMapNodeData>) {
+        latestDragEventRef.current = event;
+
+        if (!dragAnimationRef.current) {
+            dragAnimationRef.current = requestAnimationFrame(() => {
+                const currentEvent = latestDragEventRef.current;
+                if (!currentEvent) return;
+
+                const [worldX, worldY] = transformRef.current.invert([currentEvent.x, currentEvent.y]);
+    
+                setNodePositions(currentPositions => {
+                    const newPositions = new Map(currentPositions);
+                    dragStartOffsetsRef.current.forEach((offset, id) => {
+                        newPositions.set(id, { x: worldX + offset.dx, y: worldY + offset.dy });
+                    });
+                    return newPositions;
+                });
+    
+                dragAnimationRef.current = null;
+            });
+        }
+
+        let currentTargetId: string | null = null;
+        if (dragStartOffsetsRef.current.size === 1) { 
+            const nodes = nodesRef.current;
+            const [worldX, worldY] = transformRef.current.invert([event.x, event.y]);
+            const hitTarget = nodes.find(targetNode => {
+              if (targetNode.data.id === d.data.id) return false;
+              const targetPos = nodePositionsRef.current.get(targetNode.data.id);
+              const targetSize = nodeSizesRef.current[targetNode.data.id];
+              if (!targetPos || !targetSize) return false;
+              
+              return worldX > targetPos.x - targetSize.width / 2 && 
+                     worldX < targetPos.x + targetSize.width / 2 && 
+                     worldY > targetPos.y - targetSize.height / 2 && 
+                     worldY < targetPos.y + targetSize.height / 2;
+            });
+            const draggedNodeHierarchy = nodes.find(n => n.data.id === d.data.id);
+            if (hitTarget && draggedNodeHierarchy && !isDescendant(draggedNodeHierarchy, hitTarget.data.id)) {
+                currentTargetId = hitTarget.data.id;
+            }
+        }
+        setDropTargetId(currentTargetId);
+      })
+      .on('end', function (this: HTMLDivElement, event: DragEvent, d: HierarchyPointNode<MindMapNodeData>) {
+        const { onNodeMove, onMultipleNodePositionsUpdate } = dragHandlerPropsRef.current;
+
+        if (dragAnimationRef.current) {
+            cancelAnimationFrame(dragAnimationRef.current);
+            dragAnimationRef.current = null;
+        }
+
+        const finalDropTargetId = dropTargetIdRef.current;
+
+        if (finalDropTargetId && dragStartOffsetsRef.current.size === 1) {
+            onNodeMove(d.data.id, finalDropTargetId);
+        } else {
+            const [worldX, worldY] = transformRef.current.invert([event.x, event.y]);
+            const positionsToUpdate = new Map<string, { x: number; y: number }>();
+            dragStartOffsetsRef.current.forEach((offset, id) => {
+                positionsToUpdate.set(id, { x: worldX + offset.dx, y: worldY + offset.dy });
+            });
+            onMultipleNodePositionsUpdate(positionsToUpdate);
+        }
+
+        setDraggedNodeId(null);
+        setDropTargetId(null);
+        dragStartOffsetsRef.current.clear();
+      });
+
+    htmlNodes.call(dragBehavior);
+
+    return () => {
+      // Robust cleanup: re-select all nodes from the DOM to ensure all listeners are removed.
+      select(nodesContainerRef.current)
+          .selectAll<HTMLDivElement, unknown>('div.node-group')
+          .on('.drag', null);
+      if (dragAnimationRef.current) {
+        cancelAnimationFrame(dragAnimationRef.current);
+      }
+    };
+  }, [d3Root, nodes, focusedNodeId, root.id, isReviewModeActive, isDescendant]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if(selectedNodeIds.size > 0 && Array.from(selectedNodeIds).every(id => id !== root.id)) {
+        onDeleteNodes(selectedNodeIds);
+      } else if (selectedLinkId) {
+        onDeleteLink(selectedLinkId);
+        setSelectedLinkId(null);
+      }
+    }
+  }, [selectedNodeIds, root.id, selectedLinkId, onDeleteNodes, onDeleteLink]);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (drawingLinkState && gRef.current) {
+      const [x, y] = pointer(e, svgRef.current!);
+      const inverted = transformRef.current.invert([x,y]);
+      setDrawingLinkState(prev => prev ? { ...prev, endPos: { x: inverted[0], y: inverted[1] } } : null);
+    }
+  };
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (drawingLinkState) {
+      const targetElement = e.target as Element;
+      const nodeGroup = targetElement.closest('.node-group');
+      if (nodeGroup) {
+        const targetNodeId = nodeGroup.getAttribute('data-node-id');
+        if (targetNodeId) {
+            onAddLink(drawingLinkState.sourceId, targetNodeId);
+        }
+      }
+      setDrawingLinkState(null);
+    }
+  };
+
+  const focusPath = useMemo(() => {
+    if (!focusedNodeId) return [];
+    return findNodePathObjects(root, focusedNodeId);
+  }, [root, focusedNodeId]);
+  
+  const handleSelectLink = useCallback((linkId: string | null) => {
+    setSelectedLinkId(linkId);
+    if(linkId) {
+        onNodeSelect(new Set<string>());
+    }
+  }, [onNodeSelect]);
+
+  const handleNodeSelect = useCallback((id: string, event: React.MouseEvent) => {
+      event.stopPropagation();
+      setSelectedLinkId(null);
+
+      const isCtrlOrMeta = event.ctrlKey || event.metaKey;
+      const isShift = event.shiftKey;
+
+      if (isShift) {
+          // Shift+Click: Replace current selection with the clicked node's entire branch.
+          const clickedNode = findNodeById(root, id);
+          if (clickedNode) {
+              const descendantIds = getAllDescendantIds(clickedNode);
+              const branchIds = [id, ...descendantIds];
+              onNodeSelect(new Set(branchIds));
+          }
+      } else if (isCtrlOrMeta) {
+          // Ctrl/Cmd+Click: Add or remove a single node from the current selection.
+          const newSelection = new Set(selectedNodeIds);
+          if (newSelection.has(id)) {
+              newSelection.delete(id);
+          } else {
+              newSelection.add(id);
+          }
+          onNodeSelect(newSelection);
+      } else {
+          // Simple Click: Select only the clicked node.
+          onNodeSelect(new Set([id]));
+      }
+  }, [selectedNodeIds, onNodeSelect, root, getAllDescendantIds]);
+
+  const handleShowContextMenu = useCallback((nodeId: string, x: number, y: number) => {
+    onContextMenuChange({ nodeId, x, y });
+    // Also select the node if it's not already part of the selection
+    if (!selectedNodeIds.has(nodeId)) {
+        onNodeSelect(new Set([nodeId]));
+    }
+  }, [selectedNodeIds, onNodeSelect, onContextMenuChange]);
+
+  const handleCloseContextMenu = useCallback(() => {
+      onContextMenuChange(null);
+  }, [onContextMenuChange]);
+  
+  if (!d3Root) {
+    return <div>Loading...</div>; // Or some loading shell
+  }
+  
+  return (
+    <div 
+      className="w-full h-full relative overflow-hidden dotted-background"
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+    >
+      <svg
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        onClick={(e) => { if (e.target === svgRef.current) { onNodeSelect(new Set<string>()); setSelectedLinkId(null); handleCloseContextMenu(); } }}
+        onKeyDown={handleKeyDown}
+        onContextMenu={(e) => { if(e.target === svgRef.current) { e.preventDefault(); handleCloseContextMenu(); } }} // Prevent browser context menu on background
+        tabIndex={0}
+        className={`absolute top-0 left-0 focus:outline-none ${
+            toolMode === 'select' || isBoxSelecting || drawingLinkState
+                ? 'cursor-crosshair' 
+                : 'cursor-grab active:cursor-grabbing'
+        }`}
+      >
+        <defs>
+          <marker id="arrowhead" viewBox="-0 -5 10 10" refX="5" refY="0" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,-5L10,0L0,5" fill="#9ca3af"></path>
+          </marker>
+          <marker id="arrowhead-selected" viewBox="-0 -5 10 10" refX="5" refY="0" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,-5L10,0L0,5" fill="#3b82f6"></path>
+          </marker>
+        </defs>
+        <g ref={gRef} className="zoom-container" transform={transform.toString()}>
+          <g key="links">
+            {hierarchicalLinks.map(link => {
+              const sourcePos = nodePositions.get(link.source.data.id);
+              const targetPos = nodePositions.get(link.target.data.id);
+              if (!sourcePos || !targetPos) return null;
+
+              // Create a new link object with live positions from state
+              const linkWithLivePositions = {
+                  ...link,
+                  source: { ...link.source, x: sourcePos.x, y: sourcePos.y },
+                  target: { ...link.target, x: targetPos.x, y: targetPos.y }
+              };
+
+              return (
+                <Link
+                  key={`${link.source.data.id}-${link.target.data.id}`}
+                  link={linkWithLivePositions}
+                />
+              );
+            })}
+            
+            {typedLinks.map(link => {
+              const sourcePos = nodePositions.get(link.source);
+              const targetPos = nodePositions.get(link.target);
+              if (!sourcePos || !targetPos) return null;
+              return (
+                <EditableLink
+                  key={link.id}
+                  link={link}
+                  sourcePos={sourcePos}
+                  targetPos={targetPos}
+                  onUpdate={onUpdateLinkLabel}
+                  onDelete={onDeleteLink}
+                  isSelected={selectedLinkId === link.id}
+                  onSelect={handleSelectLink}
+                />
+              )
+            })}
+          </g>
+          
+          {drawingLinkState && (
+            <path
+              d={`M${nodePositions.get(drawingLinkState.sourceId)?.x},${nodePositions.get(drawingLinkState.sourceId)?.y}L${drawingLinkState.endPos.x},${drawingLinkState.endPos.y}`}
+              stroke="#3b82f6"
+              strokeWidth="2.5"
+              strokeDasharray="5,5"
+              fill="none"
+              markerEnd="url(#arrowhead-selected)"
+              style={{ pointerEvents: 'none' }}
+            />
+          )}
+
+          {selectionBox && (
+            <rect
+              x={selectionBox.x}
+              y={selectionBox.y}
+              width={selectionBox.width}
+              height={selectionBox.height}
+              className="selection-box"
+              fill="rgba(59, 130, 246, 0.1)"
+              stroke="rgba(59, 130, 246, 0.8)"
+              strokeWidth="1.5"
+              strokeDasharray="3,3"
+            />
+          )}
+
+          <AnimatePresence>
+            {longPressFeedback && (
+              <motion.circle
+                cx={longPressFeedback.x}
+                cy={longPressFeedback.y}
+                r={0}
+                fill="none"
+                stroke="rgba(59, 130, 246, 0.8)"
+                strokeWidth={2}
+                initial={{ r: 0, opacity: 1 }}
+                animate={{ r: 30, opacity: 0 }}
+                transition={{ duration: 0.5, ease: 'easeOut' }}
+              />
+            )}
+          </AnimatePresence>
+
+        </g>
+      </svg>
+      <div
+          ref={nodesContainerRef}
+          className="absolute top-0 left-0"
+          style={{
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'none',
+          }}
+      >
+          {nodes.map(d => {
+            const originalNode = originalNodesMap.get(d.data.id);
+            if (!originalNode) return null;
+            const glowInfo = glowingNodes.find(n => n.nodeId === d.data.id);
+            const pos = nodePositions.get(d.data.id);
+            if (!pos) return null;
+
+            return (
+              <Node
+                  key={d.data.id}
+                  d3Node={d}
+                  nodeData={originalNode}
+                  depth={d.depth}
+                  x={pos.x}
+                  y={pos.y}
+                  transform={transform}
+                  isSelected={selectedNodeIds.has(d.data.id)}
+                  isBeingDragged={draggedNodeId === d.data.id}
+                  isDropTarget={dropTargetId === d.data.id}
+                  isPastingImage={pastingImageNodeId === d.data.id}
+                  glowSeverity={glowInfo?.severity || null}
+                  isSearchResult={searchResultIds.includes(d.data.id)}
+                  isCurrentSearchResult={currentSearchResultId === d.data.id}
+                  startInEditMode={nodeToEditOnRender === d.data.id}
+                  originalChildrenCount={originalNode.children?.length || 0}
+                  theme={theme}
+                  onSelect={handleNodeSelect}
+                  onUpdate={onNodeUpdate}
+                  onUpdateNodeSize={onUpdateNodeSize}
+                  onNodePositionUpdate={persistNodePosition}
+                  onDelete={onNodeDelete}
+                  onToggleCollapse={onToggleCollapse}
+                  onEditComplete={onEditComplete}
+                  onSizeChange={handleNodeSizeChange}
+                  onStartLinkDraw={(id) => setDrawingLinkState({ sourceId: id, endPos: {x: pos.x, y: pos.y} })}
+                  onShowAttachments={onShowAttachments}
+                  onRemoveImage={onRemoveNodeImage}
+                  onViewImage={onViewImage}
+                  onShowContextMenu={handleShowContextMenu}
+              />
+            )
+          })}
+
+          <AnimatePresence>
+            {selectedNodeIds.size === 1 && lastSelectedNodeId && selectedNodeData && nodePositions.get(lastSelectedNodeId) && (
+              (() => {
+                const nodePos = nodePositions.get(lastSelectedNodeId)!;
+                const nodeSize = nodeSizes[lastSelectedNodeId] || { height: minNodeHeight };
+                
+                // Toolbar's top-left position in the "world" coordinate space (before pan/zoom)
+                const toolbarWorldX = nodePos.x - (TOOLBAR_WIDTH / 2);
+                const toolbarWorldY = nodePos.y - (nodeSize.height / 2) - TOOLBAR_HEIGHT - TOOLBAR_Y_OFFSET;
+
+                // Apply the pan/zoom transform to get the final screen position and scale
+                const toolbarScreenX = toolbarWorldX * transform.k + transform.x;
+                const toolbarScreenY = toolbarWorldY * transform.k + transform.y;
+                const toolbarScale = transform.k;
+
+                return (
+                  <motion.div
+                    // This outer div handles the pan/zoom transformation
+                    className="absolute top-0 left-0"
+                    style={{
+                      width: TOOLBAR_WIDTH,
+                      height: TOOLBAR_HEIGHT,
+                      pointerEvents: 'none', // Allow clicks on the toolbar inside
+                      transformOrigin: 'top left',
+                      zIndex: 20,
+                    }}
+                    animate={{
+                      x: toolbarScreenX,
+                      y: toolbarScreenY,
+                      scale: toolbarScale,
+                    }}
+                    transition={{
+                      // Ensure pan/zoom updates are instant
+                      x: { duration: 0 },
+                      y: { duration: 0 },
+                      scale: { duration: 0 },
+                    }}
+                  >
+                    <motion.div
+                      // This inner div handles the enter/exit animation relative to its parent
+                      className="node-toolbar-wrapper"
+                      style={{
+                          width: TOOLBAR_WIDTH,
+                          height: TOOLBAR_HEIGHT,
+                          transformOrigin: 'bottom center',
+                          pointerEvents: 'auto',
+                      }}
+                      initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                      transition={{ type: 'spring', damping: 15, stiffness: 250 }}
+                    >
+                      <NodeToolbar
+                        onAdd={() => onAddChild(lastSelectedNodeId!)}
+                        onInsertParent={() => onInsertParentNode(lastSelectedNodeId!)}
+                        onDelete={() => onNodeDelete(lastSelectedNodeId!)}
+                        onGenerateIdeas={() => onGenerateIdeas(lastSelectedNodeId!)}
+                        onRephraseNode={() => onRephraseNode(lastSelectedNodeId!)}
+                        onExtractConcepts={() => onExtractConcepts(lastSelectedNodeId!)}
+                        onGenerateAnalogy={() => onGenerateAnalogy(lastSelectedNodeId!)}
+                        onIdentifyAndLabel={() => onIdentifyAndLabel(lastSelectedNodeId!)}
+                        onTestBranch={() => onTestBranch(lastSelectedNodeId!)}
+                        onSelectBranch={() => onSelectBranch(lastSelectedNodeId!)}
+                        onSelectChildren={() => onSelectChildren(lastSelectedNodeId!)}
+                        onSelectSiblings={() => onSelectSiblings(lastSelectedNodeId!)}
+                        onSetColor={(color) => onSetNodeColor(lastSelectedNodeId!, color)}
+                        onFocusNode={() => onFocusNode(lastSelectedNodeId!)}
+                        isGeneratingIdeas={generatingIdeasForNodeId === lastSelectedNodeId}
+                        isRephrasing={rephrasingNodeId === lastSelectedNodeId}
+                        isExtractingConcepts={extractingConceptsNodeId === lastSelectedNodeId}
+                        isGeneratingAnalogy={generatingAnalogyNodeId === lastSelectedNodeId}
+                        isIdentifyingLabels={identifyingLabelsNodeId === lastSelectedNodeId}
+                        hasChildren={!!(selectedNodeData.children && selectedNodeData.children.length > 0)}
+                        hasImage={!!selectedNodeData.image}
+                        isRoot={selectedNodeData.id === root.id}
+                      />
+                    </motion.div>
+                  </motion.div>
+                )
+              })()
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {hotspotData && nodePositions.get(hotspotData.node.id) && (
+              (() => {
+                const nodePos = nodePositions.get(hotspotData.node.id)!;
+                const nodeSize = nodeSizes[hotspotData.node.id] || { width: nodeWidth, height: minNodeHeight };
+
+                // Hotspot's top-left position in the "world" coordinate space
+                const hotspotWorldX = nodePos.x + (nodeSize.width / 2) + HOTSPOT_X_OFFSET;
+                const hotspotWorldY = nodePos.y - (HOTSPOT_HEIGHT / 2);
+
+                // Apply the pan/zoom transform to get the final screen position and scale
+                const hotspotScreenX = hotspotWorldX * transform.k + transform.x;
+                const hotspotScreenY = hotspotWorldY * transform.k + transform.y;
+                const hotspotScale = transform.k;
+
+                return (
+                  <motion.div
+                    // This outer div handles the pan/zoom transformation
+                    className="absolute top-0 left-0 topic-hotspot-wrapper"
+                    style={{
+                      width: HOTSPOT_WIDTH,
+                      height: HOTSPOT_HEIGHT + 20, // To prevent clipping
+                      pointerEvents: 'none',
+                      zIndex: 30,
+                      transformOrigin: 'top left',
+                    }}
+                    animate={{
+                      x: hotspotScreenX,
+                      y: hotspotScreenY,
+                      scale: hotspotScale,
+                    }}
+                    transition={{
+                      // Ensure pan/zoom updates are instant
+                      x: { duration: 0 },
+                      y: { duration: 0 },
+                      scale: { duration: 0 },
+                    }}
+                  >
+                    <motion.div
+                      // This inner div handles the enter/exit animation relative to its parent
+                      style={{
+                        width: HOTSPOT_WIDTH,
+                        height: HOTSPOT_HEIGHT, // The actual component height
+                        transformOrigin: 'bottom left',
+                        pointerEvents: 'auto',
+                      }}
+                      initial={{ opacity: 0, x: -10, scale: 0.95 }}
+                      animate={{ opacity: 1, x: 0, scale: 1 }}
+                      exit={{ opacity: 0, x: -10, scale: 0.95 }}
+                      transition={{ type: 'spring', damping: 20, stiffness: 250 }}
+                    >
+                      <Suspense fallback={<div className="w-full h-full flex items-center justify-center"><i className="fa-solid fa-spinner fa-spin text-2xl text-blue-500" /></div>}>
+                          <TopicHotspot
+                            key={hotspotData.node.id}
+                            node={hotspotData.node}
+                            incorrectQuestions={hotspotData.incorrectQuestions}
+                            content={hotspotData.content}
+                            isInGuidedReview={isInGuidedReview}
+                            onClose={onCloseHotspot}
+                            onMarkAsReviewed={() => onMarkAsReviewed(hotspotData.node.id)}
+                            onExplainDifferently={onHotspotExplain}
+                            onQuizAgain={onHotspotQuiz}
+                            onAdvance={onAdvanceGuidedReview}
+                            onBackToMain={onHotspotBackToMain}
+                          />
+                      </Suspense>
+                    </motion.div>
+                  </motion.div>
+                )
+              })()
+            )}
+          </AnimatePresence>
+          
+          <AnimatePresence>
+            {contextMenu && (
+                <NodeContextMenu
+                    nodeId={contextMenu.nodeId}
+                    node={originalNodesMap.get(contextMenu.nodeId)!}
+                    position={{ x: contextMenu.x, y: contextMenu.y }}
+                    onClose={handleCloseContextMenu}
+                    onAdd={() => onAddChild(contextMenu.nodeId)}
+                    onInsertParent={() => onInsertParentNode(contextMenu.nodeId)}
+                    onDelete={() => onNodeDelete(contextMenu.nodeId)}
+                    onGenerateIdeas={() => onGenerateIdeas(contextMenu.nodeId)}
+                    onRephraseNode={() => onRephraseNode(contextMenu.nodeId)}
+                    onExtractConcepts={() => onExtractConcepts(contextMenu.nodeId)}
+                    onGenerateAnalogy={() => onGenerateAnalogy(contextMenu.nodeId)}
+                    onIdentifyAndLabel={() => onIdentifyAndLabel(contextMenu.nodeId)}
+                    onSetNodeColor={(color) => onSetNodeColor(contextMenu.nodeId, color)}
+                    onFocusNode={() => onFocusNode(contextMenu.nodeId)}
+                    onTestBranch={() => onTestBranch(contextMenu.nodeId)}
+                    isGeneratingIdeas={generatingIdeasForNodeId === contextMenu.nodeId}
+                    isRephrasing={rephrasingNodeId === contextMenu.nodeId}
+                    isExtractingConcepts={extractingConceptsNodeId === contextMenu.nodeId}
+                    isGeneratingAnalogy={generatingAnalogyNodeId === contextMenu.nodeId}
+                    isIdentifyingLabels={identifyingLabelsNodeId === contextMenu.nodeId}
+                />
+            )}
+          </AnimatePresence>
+      </div>
+      <AnimatePresence>
+        {focusedNodeId && focusPath.length > 0 && (
+          <FocusBar path={focusPath} onNavigate={onFocusNode} />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+});
+
+export default MindMap;
