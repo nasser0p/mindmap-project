@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 2. Base Styles & Static Mesh Gradient Background */
+@layer base {
+  :root {
+    /* Light Mode */
+    --bg-light-1: #e0f2fe; /* sky-100 */
+    --bg-light-2: #ede9fe; /* violet-100 */
+    --bg-light-3: #f0f9ff; /* sky-50 */
+  }
+
+  .dark {
+    /* Dark Mode */
+    --bg-dark-1: #1e293b; /* slate-800 */
+    --bg-dark-2: #312e81; /* indigo-900 */
+    --bg-dark-3: #0f172a; /* slate-900 */
+  }
+
+  body {
+    background-color: #f1f5f9; /* slate-100 */
+    font-family: 'Inter', sans-serif;
+    position: relative;
+    overflow: hidden;
+    background-image: radial-gradient(at 27% 37%, var(--bg-light-1) 0px, transparent 50%),
+                      radial-gradient(at 97% 21%, var(--bg-light-2) 0px, transparent 50%),
+                      radial-gradient(at 82% 99%, var(--bg-light-3) 0px, transparent 50%);
+  }
+  
+  .dark body {
+    background-color: #020617; /* slate-950 */
+    background-image: radial-gradient(at 27% 37%, var(--bg-dark-1) 0px, transparent 50%),
+                      radial-gradient(at 97% 21%, var(--bg-dark-2) 0px, transparent 50%),
+                      radial-gradient(at 82% 99%, var(--bg-dark-3) 0px, transparent 50%);
+  }
+}
+
+/* 3. Custom Component Styles */
+
+/* Scrollbar utility */
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+}
+
+/* Styles for the tutorial nudge arrow */
+.tutorial-nudge .tutorial-arrow {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-style: solid;
+}
+.tutorial-nudge .tutorial-arrow-bottom {
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-color: transparent transparent #1e293b transparent; /* bg-slate-800 */
+  border-width: 0 8px 8px 8px;
+}
+.tutorial-nudge .tutorial-arrow-top {
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 8px 8px 0 8px;
+  border-color: #1e293b transparent transparent transparent;
+}
+.tutorial-nudge .tutorial-arrow-left {
+  right: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-width: 8px 0 8px 8px;
+  border-color: transparent transparent transparent #1e293b;
+}
+.tutorial-nudge .tutorial-arrow-right {
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-width: 8px 8px 8px 0;
+  border-color: transparent #1e293b transparent transparent;
+}
+
+/* Selection box for MindMap */
+.selection-box {
+  pointer-events: none;
+}
+
+/* 4. Landing Page Specific Styles */
+.landing-dark-bg {
+  background-color: #020617; /* slate-950 */
+}
+
+.shimmer-bg {
+  background: linear-gradient(110deg, #0f172a 8%, #1e293b 18%, #0f172a 33%);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.how-it-works-line {
+  background-image: linear-gradient(to right, #e2e8f0 50%, transparent 50%);
+  background-size: 16px 1px;
+  background-repeat: repeat-x;
+}
+
+.feature-demo-bg {
+  background-image: radial-gradient(#334155 1px, transparent 1px);
+  background-size: 16px 16px;
+}
