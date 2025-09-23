@@ -1,0 +1,35 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /documents/{docId} {
+      // Owner has full control over their own documents.
+      allow read, update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+      
+      // ====================================================================================
+      // IMPORTANT: ACTION REQUIRED FOR ADMIN PANEL
+      // To allow the admin panel to read all data, you MUST replace the placeholder UID
+      // below with the same Firebase UID you set for SUPER_ADMIN_UID in 'src/constants.ts'.
+      // ====================================================================================
+      allow get, list: if request.auth != null && request.auth.uid == 'fYCpcIideMYs09ZkgZm31cGzQks1';
+      
+      // Authenticated users can create documents, but must set themselves as the owner.
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+
+      // Rules for the new 'chapters' sub-collection
+      match /chapters/{chapterId} {
+        // Allow full control if the user owns the parent document.
+        allow read, write, delete, create: if request.auth != null 
+            && get(/databases/$(database)/documents/documents/$(docId)).data.ownerId == request.auth.uid;
+      }
+    }
+
+    match /feedback/{feedbackId} {
+      // Admin has full control
+      allow read, update, delete, list: if request.auth != null && request.auth.uid == 'fYCpcIideMYs09ZkgZm31cGzQks1';
+
+      // Any authenticated user can create feedback
+      allow create: if request.auth != null;
+    }
+  }
+}
