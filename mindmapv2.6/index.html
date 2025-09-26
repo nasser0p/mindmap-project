@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Mind Mapper</title>
+
+    <!-- Font Optimization -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- Other stylesheets and scripts -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script>
+      // Prevents Flash of Unstyled Content (FOUC) for dark mode
+      (function() {
+        if (localStorage.getItem('mindmap-theme') === 'dark') {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://esm.sh/react-dom@^19.1.1/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.13.0",
+    "react/": "https://esm.sh/react@^19.1.1/",
+    "react": "https://esm.sh/react@^19.1.1",
+    "uuid": "https://esm.sh/uuid@^11.1.0",
+    "d3": "https://esm.sh/d3@^7.9.0",
+    "framer-motion": "https://esm.sh/framer-motion@^11.3.11/",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js",
+    "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js",
+    "firebase/storage": "https://www.gstatic.com/firebasejs/10.12.3/firebase-storage.js",
+    "firebase/": "https://esm.sh/firebase@^12.1.0/",
+    "d3-zoom": "https://esm.sh/d3-zoom@^3.0.0",
+    "d3-selection": "https://esm.sh/d3-selection@^3.0.0",
+    "d3-drag": "https://esm.sh/d3-drag@^3.0.0",
+    "d3-shape": "https://esm.sh/d3-shape@^3.2.0",
+    "d3-hierarchy": "https://esm.sh/d3-hierarchy@^3.1.2",
+    "d3-ease": "https://esm.sh/d3-ease@^3.0.1",
+    "pdfjs-dist": "https://esm.sh/pdfjs-dist@^5.4.54",
+    "pdfjs-dist/": "https://esm.sh/pdfjs-dist@^5.4.54/",
+    "d3-transition": "https://esm.sh/d3-transition@^3.0.1",
+    "html2canvas": "https://esm.sh/html2canvas@^1.4.1",
+    "vite": "https://aistudiocdn.com/vite@^7.1.6",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "url": "https://aistudiocdn.com/url@^0.11.4"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-white dark:bg-slate-900 text-gray-800 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
