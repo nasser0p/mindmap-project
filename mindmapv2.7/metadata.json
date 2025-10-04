@@ -1,0 +1,7 @@
+{
+  "name": "mindmap13",
+  "description": "AI-powered learning and mind-mapping application called MindMaster AI.\nIts primary purpose is to transform unstructured information (like documents or notes) into a structured, visual, and interactive learning experience. It guides the user through the entire learning lifecycle, from initial understanding to final mastery.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
